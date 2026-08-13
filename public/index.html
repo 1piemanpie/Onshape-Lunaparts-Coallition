@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Parts Tracker Bridge — Onshape App</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Custom design tokens for this panel. A graphite/slate base with a
+  // technical blue accent, plus semantic amber/green/red for connection
+  // and sync status — read like an instrument panel, not a marketing page.
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          canvas: '#12151B',
+          surface: '#191D24',
+          surface2: '#15181F',
+          term: '#0B0D11',
+          border: '#262B34',
+          borderStrong: '#38404C',
+          primary: '#E7EAF0',
+          secondary: '#8891A0',
+          dim: '#565E6A',
+          accent: '#4C8DFF',
+          accentSoft: '#1C2740',
+          amber: '#F0A93A',
+          good: '#33D399',
+          bad: '#FF6161',
+        },
+        fontFamily: {
+          mono: ['"IBM Plex Mono"', 'monospace'],
+          sans: ['Inter', 'sans-serif'],
+        },
+        boxShadow: {
+          glow: '0 0 0 3px rgba(76,141,255,0.18)',
+          panel: '0 8px 24px rgba(0,0,0,0.5)',
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  /* Preview-page-only backdrop: a faint dot grid, echoing an Onshape
+     viewport, so the 300px panel reads as a sidebar floating over a
+     CAD canvas. Delete this <style> block (and the body padding) when
+     you drop the panel into the real Onshape app iframe — only the
+     <div id="partsTrackerPanel"> below is the actual app. */
+  body {
+    background-color: #0A0C0F;
+    background-image: radial-gradient(circle, rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+
+  #logWindow::-webkit-scrollbar { width: 6px; }
+  #logWindow::-webkit-scrollbar-track { background: transparent; }
+  #logWindow::-webkit-scrollbar-thumb { background: #38404C; border-radius: 3px; }
+  #logWindow { scrollbar-width: thin; scrollbar-color: #38404C transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #ledPing { animation: none !important; }
+    * { transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+
+<body class="min-h-screen flex items-start justify-center p-8">
+
+  <!-- ================================================================
+       THE APP: everything inside this div is what gets embedded in
+       Onshape's right-sidebar iframe. Fixed at 300px to match Onshape's
+       panel width exactly.
+       ================================================================ -->
+  <div id="partsTrackerPanel"
+       class="w-[300px] bg-canvas border border-border rounded-[3px] shadow-panel text-primary font-sans text-[13px] overflow-hidden">
+
+    <!-- Header -->
+    <div class="px-3 pt-3 pb-2.5">
+      <div class="flex items-start justify-between">
+        <div>
+          <h1 class="font-sans font-semibold text-[13px] tracking-wide leading-none">Parts Tracker Bridge</h1>
+          <p class="mt-1 font-mono text-[10px] uppercase tracking-wider text-dim">Onshape &rarr; MFG Sync</p>
+        </div>
+        <span class="font-mono text-[9px] text-dim border border-border rounded-[2px] px-1 py-0.5 leading-none">v0.1</span>
+      </div>
+
+      <div class="mt-2.5 flex items-center gap-1.5">
+        <span class="relative flex h-2 w-2">
+          <span id="ledPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber opacity-75"></span>
+          <span id="ledCore" class="relative inline-flex rounded-full h-2 w-2 bg-amber"></span>
+        </span>
+        <span id="statusText" class="font-mono text-[11px] text-secondary">Connecting to tracker&hellip;</span>
+      </div>
+    </div>
+
+    <div class="h-px bg-border"></div>
+
+    <!-- Selected Part -->
+    <div class="px-3 py-3">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-mono text-[10px] uppercase tracking-wider text-dim">Selected Part</h2>
+        <button id="simulateBtn"
+          class="font-mono text-[9.5px] uppercase tracking-wide text-accent/80 hover:text-accent border border-dashed border-accent/30 hover:border-accent/60 rounded-[2px] px-1.5 py-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+          Simulate select
+        </button>
+      </div>
+
+      <div class="relative">
+        <!-- viewfinder corner marks: frames the data being read off the CAD part -->
+        <span class="pointer-events-none absolute -top-1 -left-1 w-2.5 h-2.5 border-t border-l border-accent/50"></span>
+        <span class="pointer-events-none absolute -top-1 -right-1 w-2.5 h-2.5 border-t border-r border-accent/50"></span>
+        <span class="pointer-events-none absolute -bottom-1 -left-1 w-2.5 h-2.5 border-b border-l border-accent/50"></span>
+        <span class="pointer-events-none absolute -bottom-1 -right-1 w-2.5 h-2.5 border-b border-r border-accent/50"></span>
+
+        <div id="partCard" class="border border-border bg-surface rounded-[2px] p-2.5 transition-shadow duration-500">
+          <!-- Empty state -->
+          <div id="emptyState" class="py-3 text-center">
+            <p class="font-mono text-[11px] text-dim">No part selected</p>
+            <p class="mt-1 font-mono text-[9.5px] text-dim/80 leading-snug">Select a part on the Onshape canvas to read its properties here.</p>
+          </div>
+          <!-- Filled state -->
+          <div id="filledState" class="hidden divide-y divide-border/70">
+            <div class="py-1.5 first:pt-0">
+              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Part name</p>
+              <p id="fPartName" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+            </div>
+            <div class="py-1.5">
+              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Material</p>
+              <p id="fMaterial" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+            </div>
+            <div class="py-1.5">
+              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Thickness</p>
+              <p id="fThickness" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+            </div>
+            <div class="py-1.5 last:pb-0">
+              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Assoc. drawing</p>
+              <p id="fDrawing" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="h-px bg-border"></div>
+
+    <!-- Auto-upload toggle -->
+    <div class="px-3 py-3 flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <p class="font-mono text-[10.5px] uppercase tracking-wide">Auto-upload</p>
+        <p class="font-mono text-[9.5px] text-dim mt-0.5 leading-snug">Push DXF to tracker on every selection</p>
+      </div>
+      <button id="autoToggle" type="button" role="switch" aria-pressed="false"
+        class="relative shrink-0 w-9 h-5 rounded-full bg-surface2 border border-border transition-colors mt-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+        <span id="toggleKnob" class="absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-dim transition-transform duration-200"></span>
+      </button>
+    </div>
+
+    <div class="px-3 pb-3 -mt-1">
+      <button id="manualUploadBtn" disabled
+        class="w-full font-mono text-[10.5px] uppercase tracking-wide border border-border text-dim rounded-[2px] py-1.5 transition-all duration-150 hover:border-borderStrong hover:text-secondary disabled:opacity-40 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+        Push to tracker
+      </button>
+    </div>
+
+    <div class="h-px bg-border"></div>
+
+    <!-- Sync log -->
+    <div class="px-3 py-3">
+      <div class="flex items-center justify-between mb-1.5">
+        <h2 class="font-mono text-[10px] uppercase tracking-wider text-dim">Sync log</h2>
+        <button id="clearLogBtn" class="font-mono text-[9.5px] text-dim hover:text-secondary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-[2px]">Clear</button>
+      </div>
+      <div id="logWindow" class="h-32 overflow-y-auto bg-term border border-border rounded-[2px] p-2 font-mono text-[10.5px] leading-relaxed space-y-0.5"></div>
+    </div>
+
+    <div class="px-3 pb-3 -mt-1">
+      <p class="font-mono text-[8.5px] text-dim/70 text-center">Mock bridge &mdash; wire up the Onshape &amp; tracker APIs to go live.</p>
+    </div>
+
+  </div>
+  <!-- ============================ /THE APP ============================ -->
+
+<script>
+(function () {
+  // --------------------------------------------------------------------
+  // MOCK DATA — stands in for real Onshape selection events.
+  //
+  // In a real Onshape app, part data comes from Onshape's Application
+  // Extensibility APIs: you'd listen for a selection-changed message
+  // from the Onshape client (via window.postMessage or the onshape
+  // client SDK) and fetch part/metadata properties from the Onshape
+  // REST API (Metadata + Part Studio endpoints). Replace
+  // `selectNextMockPart()` with that listener, and replace
+  // `runUploadSequence()` with real calls to (1) Onshape's DXF export
+  // endpoint and (2) your tracker backend's upload endpoint.
+  // --------------------------------------------------------------------
+  const MOCK_PARTS = [
+    { name: 'Bracket_04',     material: '6061-T6 Aluminum',    thickness: '0.125 in', drawing: 'BRK-04-REV3' },
+    { name: 'Gusset_Plate_A', material: '304 Stainless Steel', thickness: '0.190 in', drawing: 'GST-A-REV1' },
+    { name: 'Mount_Left',     material: 'A36 Steel',           thickness: '0.250 in', drawing: 'MNT-L-REV5' },
+  ];
+
+  const state = { connected: false, autoUpload: false, part: null, mockIndex: -1, uploading: false };
+
+  const el = (id) => document.getElementById(id);
+  const ledPing = el('ledPing');
+  const ledCore = el('ledCore');
+  const statusText = el('statusText');
+  const emptyState = el('emptyState');
+  const filledState = el('filledState');
+  const partCard = el('partCard');
+  const fPartName = el('fPartName');
+  const fMaterial = el('fMaterial');
+  const fThickness = el('fThickness');
+  const fDrawing = el('fDrawing');
+  const simulateBtn = el('simulateBtn');
+  const autoToggle = el('autoToggle');
+  const toggleKnob = el('toggleKnob');
+  const manualUploadBtn = el('manualUploadBtn');
+  const logWindow = el('logWindow');
+  const clearLogBtn = el('clearLogBtn');
+
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function log(message, kind = 'system') {
+    const colorClass = {
+      system: 'text-secondary',
+      success: 'text-good',
+      upload: 'text-accent',
+      error: 'text-bad',
+    }[kind] || 'text-secondary';
+
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const line = document.createElement('div');
+    line.className = colorClass;
+    line.innerHTML = `<span class="text-dim">${time}</span> ${message}`;
+    logWindow.appendChild(line);
+    logWindow.scrollTop = logWindow.scrollHeight;
+  }
+
+  // ---- Simulated connection to the Parts Tracker service ---------------
+  async function connect() {
+    log('[System] Initializing bridge&hellip;');
+    await delay(500);
+    log('[System] Handshaking with Parts Tracker API&hellip;');
+    await delay(700);
+
+    state.connected = true;
+    ledPing.classList.add('hidden');
+    ledCore.classList.remove('bg-amber');
+    ledCore.classList.add('bg-good');
+    ledCore.style.boxShadow = '0 0 6px 1px rgba(51,211,153,0.55)';
+    statusText.textContent = 'Connected to tracker';
+    statusText.classList.remove('text-secondary');
+    statusText.classList.add('text-good');
+
+    log('[System] Connected.', 'success');
+  }
+
+  // ---- Simulated Onshape part-selection event ---------------------------
+  function selectNextMockPart() {
+    state.mockIndex = (state.mockIndex + 1) % MOCK_PARTS.length;
+    const part = MOCK_PARTS[state.mockIndex];
+    state.part = part;
+
+    emptyState.classList.add('hidden');
+    filledState.classList.remove('hidden');
+    fPartName.textContent = part.name;
+    fMaterial.textContent = part.material;
+    fThickness.textContent = part.thickness;
+    fDrawing.textContent = part.drawing;
+
+    // brief highlight to show the card just refreshed
+    partCard.classList.remove('shadow-glow');
+    void partCard.offsetWidth; // restart the CSS transition
+    partCard.classList.add('shadow-glow');
+
+    log(`[System] Part selected: ${part.name}`);
+    manualUploadBtn.disabled = state.autoUpload || !state.part;
+
+    if (state.autoUpload) runUploadSequence(part);
+  }
+
+  // ---- Simulated DXF export + tracker sync ------------------------------
+  async function runUploadSequence(part) {
+    if (state.uploading) return;
+    state.uploading = true;
+
+    log('[System] DXF generated by Onshape API&hellip;');
+    await delay(600);
+    log('[System] Syncing DXF to tracker&hellip;', 'upload');
+    await delay(900);
+    const trackerId = Math.floor(1000 + Math.random() * 9000);
+    log(`[System] Upload complete &mdash; Tracker ID #${trackerId} assigned.`, 'success');
+
+    state.uploading = false;
+  }
+
+  function setAutoUpload(on) {
+    state.autoUpload = on;
+    autoToggle.setAttribute('aria-pressed', String(on));
+    autoToggle.classList.toggle('bg-surface2', !on);
+    autoToggle.classList.toggle('border-border', !on);
+    autoToggle.classList.toggle('bg-accentSoft', on);
+    autoToggle.classList.toggle('border-accent/50', on);
+    toggleKnob.classList.toggle('bg-dim', !on);
+    toggleKnob.classList.toggle('bg-accent', on);
+    toggleKnob.classList.toggle('translate-x-4', on);
+
+    log(`[System] Auto-upload ${on ? 'enabled' : 'disabled'}.`);
+    manualUploadBtn.disabled = state.autoUpload || !state.part;
+  }
+
+  simulateBtn.addEventListener('click', selectNextMockPart);
+  autoToggle.addEventListener('click', () => setAutoUpload(!state.autoUpload));
+  manualUploadBtn.addEventListener('click', () => {
+    if (!state.part || manualUploadBtn.disabled) return;
+    runUploadSequence(state.part);
+  });
+  clearLogBtn.addEventListener('click', () => {
+    logWindow.innerHTML = '';
+    log('[System] Log cleared.');
+  });
+
+  connect();
+})();
+</script>
+</body>
+</html>
