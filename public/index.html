@@ -10,35 +10,34 @@
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
-  // Custom design tokens for this panel. A graphite/slate base with a
-  // technical blue accent, plus semantic amber/green/red for connection
-  // and sync status — read like an instrument panel, not a marketing page.
+  // Design tokens matched to the LUNA Parts dashboard: light surfaces,
+  // a dark icon-badge + gold accent (echoing LUNA's own logo lockup),
+  // plain-case gray labels instead of the old uppercase/mono HUD look.
   tailwind.config = {
     theme: {
       extend: {
         colors: {
-          canvas: '#12151B',
-          surface: '#191D24',
-          surface2: '#15181F',
-          term: '#0B0D11',
-          border: '#262B34',
-          borderStrong: '#38404C',
-          primary: '#E7EAF0',
-          secondary: '#8891A0',
-          dim: '#565E6A',
-          accent: '#4C8DFF',
-          accentSoft: '#1C2740',
-          amber: '#F0A93A',
-          good: '#33D399',
-          bad: '#FF6161',
+          canvas: '#F4F5F7',
+          surface: '#FFFFFF',
+          surface2: '#EEF0F3',
+          border: '#E3E6EA',
+          borderStrong: '#CDD2D9',
+          primary: '#16181D',
+          secondary: '#5B6270',
+          dim: '#9AA1AC',
+          accent: '#B45309',
+          accentSoft: '#FEF3C7',
+          amber: '#D97706',
+          good: '#15803D',
+          bad: '#DC2626',
         },
         fontFamily: {
           mono: ['"IBM Plex Mono"', 'monospace'],
           sans: ['Inter', 'sans-serif'],
         },
         boxShadow: {
-          glow: '0 0 0 3px rgba(76,141,255,0.18)',
-          panel: '0 8px 24px rgba(0,0,0,0.5)',
+          glow: '0 0 0 3px rgba(180,83,9,0.16)',
+          panel: '0 8px 24px rgba(20,22,26,0.12)',
         },
       },
     },
@@ -46,21 +45,20 @@
 </script>
 
 <style>
-  /* Preview-page-only backdrop: a faint dot grid, echoing an Onshape
-     viewport, so the 300px panel reads as a sidebar floating over a
-     CAD canvas. Delete this <style> block (and the body padding) when
-     you drop the panel into the real Onshape app iframe — only the
-     <div id="partsTrackerPanel"> below is the actual app. */
+  /* Preview-page-only backdrop, so the 300px panel reads as a sidebar
+     floating over a light app canvas. Delete this <style> block (and the
+     body padding) when you drop the panel into the real Onshape app
+     iframe — only the <div id="partsTrackerPanel"> below is the actual app. */
   body {
-    background-color: #0A0C0F;
-    background-image: radial-gradient(circle, rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-color: #E9EBEE;
+    background-image: radial-gradient(circle, rgba(22,24,29,0.06) 1px, transparent 1px);
     background-size: 18px 18px;
   }
 
   #logWindow::-webkit-scrollbar { width: 6px; }
   #logWindow::-webkit-scrollbar-track { background: transparent; }
-  #logWindow::-webkit-scrollbar-thumb { background: #38404C; border-radius: 3px; }
-  #logWindow { scrollbar-width: thin; scrollbar-color: #38404C transparent; }
+  #logWindow::-webkit-scrollbar-thumb { background: #CDD2D9; border-radius: 3px; }
+  #logWindow { scrollbar-width: thin; scrollbar-color: #CDD2D9 transparent; }
 
   @media (prefers-reduced-motion: reduce) {
     #ledPing { animation: none !important; }
@@ -77,16 +75,23 @@
        panel width exactly.
        ================================================================ -->
   <div id="partsTrackerPanel"
-       class="w-[300px] bg-canvas border border-border rounded-[3px] shadow-panel text-primary font-sans text-[13px] overflow-hidden">
+       class="w-[300px] bg-canvas border border-border rounded-lg shadow-panel text-primary font-sans text-[13px] overflow-hidden">
 
     <!-- Header -->
-    <div class="px-3 pt-3 pb-2.5">
+    <div class="px-3 pt-3 pb-2.5 bg-surface">
       <div class="flex items-start justify-between">
-        <div>
-          <h1 class="font-sans font-semibold text-[13px] tracking-wide leading-none">Parts Tracker Bridge</h1>
-          <p class="mt-1 font-mono text-[10px] uppercase tracking-wider text-dim">Onshape &rarr; MFG Sync</p>
+        <div class="flex items-center gap-2">
+          <span class="flex items-center justify-center w-6 h-6 rounded-md bg-[#16181D] shrink-0">
+            <svg class="text-[#F2C230]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M7 7h11l-3-3M17 17H6l3 3"/>
+            </svg>
+          </span>
+          <div>
+            <h1 class="font-sans font-semibold text-[13px] leading-none">Parts Tracker Bridge</h1>
+            <p class="mt-1 text-[10.5px] text-dim leading-none">Onshape &rarr; LUNA Parts</p>
+          </div>
         </div>
-        <span class="font-mono text-[9px] text-dim border border-border rounded-[2px] px-1 py-0.5 leading-none">v0.1</span>
+        <span class="font-mono text-[9px] text-dim border border-border rounded px-1 py-0.5 leading-none">v0.1</span>
       </div>
 
       <div class="mt-2.5 flex items-center gap-1.5">
@@ -94,7 +99,7 @@
           <span id="ledPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber opacity-75"></span>
           <span id="ledCore" class="relative inline-flex rounded-full h-2 w-2 bg-amber"></span>
         </span>
-        <span id="statusText" class="font-mono text-[11px] text-secondary">Connecting to tracker&hellip;</span>
+        <span id="statusText" class="text-[11.5px] text-secondary">Connecting to tracker&hellip;</span>
       </div>
     </div>
 
@@ -103,43 +108,43 @@
     <!-- Selected Part -->
     <div class="px-3 py-3">
       <div class="flex items-center justify-between mb-2">
-        <h2 class="font-mono text-[10px] uppercase tracking-wider text-dim">Selected Part</h2>
+        <h2 class="text-[11.5px] text-secondary">Selected Part</h2>
         <button id="simulateBtn"
-          class="font-mono text-[9.5px] uppercase tracking-wide text-accent/80 hover:text-accent border border-dashed border-accent/30 hover:border-accent/60 rounded-[2px] px-1.5 py-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+          class="text-[10px] text-accent/90 hover:text-accent border border-dashed border-accent/40 hover:border-accent/70 rounded px-1.5 py-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
           Simulate select
         </button>
       </div>
 
       <div class="relative">
         <!-- viewfinder corner marks: frames the data being read off the CAD part -->
-        <span class="pointer-events-none absolute -top-1 -left-1 w-2.5 h-2.5 border-t border-l border-accent/50"></span>
-        <span class="pointer-events-none absolute -top-1 -right-1 w-2.5 h-2.5 border-t border-r border-accent/50"></span>
-        <span class="pointer-events-none absolute -bottom-1 -left-1 w-2.5 h-2.5 border-b border-l border-accent/50"></span>
-        <span class="pointer-events-none absolute -bottom-1 -right-1 w-2.5 h-2.5 border-b border-r border-accent/50"></span>
+        <span class="pointer-events-none absolute -top-1 -left-1 w-2.5 h-2.5 border-t border-l border-accent/40"></span>
+        <span class="pointer-events-none absolute -top-1 -right-1 w-2.5 h-2.5 border-t border-r border-accent/40"></span>
+        <span class="pointer-events-none absolute -bottom-1 -left-1 w-2.5 h-2.5 border-b border-l border-accent/40"></span>
+        <span class="pointer-events-none absolute -bottom-1 -right-1 w-2.5 h-2.5 border-b border-r border-accent/40"></span>
 
-        <div id="partCard" class="border border-border bg-surface rounded-[2px] p-2.5 transition-shadow duration-500">
+        <div id="partCard" class="border border-border bg-surface rounded-md p-2.5 transition-shadow duration-500">
           <!-- Empty state -->
           <div id="emptyState" class="py-3 text-center">
-            <p class="font-mono text-[11px] text-dim">No part selected</p>
-            <p class="mt-1 font-mono text-[9.5px] text-dim/80 leading-snug">Select a part on the Onshape canvas to read its properties here.</p>
+            <p class="text-[11.5px] text-secondary">No part selected</p>
+            <p class="mt-1 text-[10px] text-dim leading-snug">Select a part on the Onshape canvas to read its properties here.</p>
           </div>
           <!-- Filled state -->
-          <div id="filledState" class="hidden divide-y divide-border/70">
+          <div id="filledState" class="hidden divide-y divide-border">
             <div class="py-1.5 first:pt-0">
-              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Part name</p>
-              <p id="fPartName" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+              <p class="text-[10px] text-dim">Part name</p>
+              <p id="fPartName" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
             </div>
             <div class="py-1.5">
-              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Material</p>
-              <p id="fMaterial" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+              <p class="text-[10px] text-dim">Material</p>
+              <p id="fMaterial" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
             </div>
             <div class="py-1.5">
-              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Thickness</p>
-              <p id="fThickness" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+              <p class="text-[10px] text-dim">Thickness</p>
+              <p id="fThickness" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
             </div>
             <div class="py-1.5 last:pb-0">
-              <p class="font-mono text-[9px] uppercase tracking-wider text-dim">Assoc. drawing</p>
-              <p id="fDrawing" class="font-mono text-[12px] text-primary mt-0.5 truncate">&mdash;</p>
+              <p class="text-[10px] text-dim">Assoc. drawing</p>
+              <p id="fDrawing" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
             </div>
           </div>
         </div>
@@ -151,8 +156,8 @@
     <!-- Auto-upload toggle -->
     <div class="px-3 py-3 flex items-start justify-between gap-2">
       <div class="min-w-0">
-        <p class="font-mono text-[10.5px] uppercase tracking-wide">Auto-upload</p>
-        <p class="font-mono text-[9.5px] text-dim mt-0.5 leading-snug">Push DXF to tracker on every selection</p>
+        <p class="text-[11.5px] font-medium">Auto-upload</p>
+        <p class="text-[10px] text-dim mt-0.5 leading-snug">Push DXF to tracker on every selection</p>
       </div>
       <button id="autoToggle" type="button" role="switch" aria-pressed="false"
         class="relative shrink-0 w-9 h-5 rounded-full bg-surface2 border border-border transition-colors mt-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
@@ -162,7 +167,7 @@
 
     <div class="px-3 pb-3 -mt-1">
       <button id="manualUploadBtn" disabled
-        class="w-full font-mono text-[10.5px] uppercase tracking-wide border border-border text-dim rounded-[2px] py-1.5 transition-all duration-150 hover:border-borderStrong hover:text-secondary disabled:opacity-40 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+        class="w-full text-[11.5px] font-medium border border-border text-dim rounded-md py-1.5 transition-all duration-150 hover:border-borderStrong hover:text-secondary disabled:opacity-40 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
         Push to tracker
       </button>
     </div>
@@ -172,14 +177,14 @@
     <!-- Sync log -->
     <div class="px-3 py-3">
       <div class="flex items-center justify-between mb-1.5">
-        <h2 class="font-mono text-[10px] uppercase tracking-wider text-dim">Sync log</h2>
-        <button id="clearLogBtn" class="font-mono text-[9.5px] text-dim hover:text-secondary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-[2px]">Clear</button>
+        <h2 class="text-[11.5px] text-secondary">Sync log</h2>
+        <button id="clearLogBtn" class="text-[10px] text-dim hover:text-secondary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded">Clear</button>
       </div>
-      <div id="logWindow" class="h-32 overflow-y-auto bg-term border border-border rounded-[2px] p-2 font-mono text-[10.5px] leading-relaxed space-y-0.5"></div>
+      <div id="logWindow" class="h-32 overflow-y-auto bg-surface border border-border rounded-md p-2 font-mono text-[10px] leading-relaxed space-y-0.5"></div>
     </div>
 
     <div class="px-3 pb-3 -mt-1">
-      <p class="font-mono text-[8.5px] text-dim/70 text-center">Mock bridge &mdash; wire up the Onshape &amp; tracker APIs to go live.</p>
+      <p class="text-[9px] text-dim text-center">Mock bridge &mdash; wire up the Onshape &amp; tracker APIs to go live.</p>
     </div>
 
   </div>
@@ -254,7 +259,7 @@
     ledPing.classList.add('hidden');
     ledCore.classList.remove('bg-amber');
     ledCore.classList.add('bg-good');
-    ledCore.style.boxShadow = '0 0 6px 1px rgba(51,211,153,0.55)';
+    ledCore.style.boxShadow = '0 0 6px 1px rgba(21,128,61,0.45)';
     statusText.textContent = 'Connected to tracker';
     statusText.classList.remove('text-secondary');
     statusText.classList.add('text-good');
