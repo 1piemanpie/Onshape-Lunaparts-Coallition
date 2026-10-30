@@ -328,6 +328,13 @@
       state.connected = true;
       setStatus('Connected to LUNA Parts', 'good');
       log(`[System] Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
+
+      // Set when the panel was opened from inside Onshape (the extension's Action URL).
+      const session = await fetch('/api/session', { credentials: 'include' }).then((r) => r.json());
+      state.context = session.context;
+      log(session.context
+        ? `[System] Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
+        : '[System] Not opened from Onshape (no document info).');
     } catch (err) {
       setStatus('Could not reach LUNA Parts', 'bad');
       for (const s of [projectSelect, toolSelect, thicknessSelect]) {

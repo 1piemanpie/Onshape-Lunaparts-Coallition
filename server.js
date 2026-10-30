@@ -43,7 +43,24 @@ function callbackUrl(req) {
 // Step 1: this is the "OAuth URL" registered with Onshape. Onshape fetches
 // it to start login — we send the browser on to Onshape's own authorize
 // screen, with a random `state` value we can verify on the way back.
+//
+// The Onshape extension's Action URL points here too, with the open
+// document's IDs filled in by Onshape. We keep those in the session so the
+// panel knows which Part Studio it's sitting in once login finishes.
+const ONSHAPE_ID = /^[0-9a-f]{24}$/;
+
 app.get('/oauth/login', (req, res) => {
+  const { documentId, workspaceId, elementId } = req.query;
+  if ([documentId, workspaceId, elementId].every((id) => ONSHAPE_ID.test(id || ''))) {
+    req.session.onshapeContext = { documentId, workspaceId, elementId };
+  }
+
+  // Already logged in with a token that hasn't expired: skip straight to the panel.
+  const tokens = req.session.onshapeTokens;
+  if (tokens && tokens.expiresAt > Date.now()) {
+    return res.redirect('/');
+  }
+
   const state = crypto.randomBytes(16).toString('hex');
   req.session.oauthState = state;
 
@@ -109,7 +126,10 @@ app.get('/oauth/callback', async (req, res) => {
 
 // Lets the panel's front-end check whether this session is logged in yet.
 app.get('/api/session', (req, res) => {
-  res.json({ connected: Boolean(req.session.onshapeTokens) });
+  res.json({
+    connected: Boolean(req.session.onshapeTokens),
+    context: req.session.onshapeContext || null,
+  });
 });
 
 // ---- LUNA Parts ---------------------------------------------------------
