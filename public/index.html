@@ -153,6 +153,33 @@
 
     <div class="h-px bg-border"></div>
 
+    <!-- Destination in LUNA Parts (lists come from /api/luna/options) -->
+    <div class="px-3 py-3 space-y-2">
+      <h2 class="text-[11.5px] text-secondary">Send to</h2>
+      <label class="block">
+        <span class="text-[10px] text-dim">Project</span>
+        <select id="projectSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+          <option value="">Loading&hellip;</option>
+        </select>
+      </label>
+      <div class="flex gap-2">
+        <label class="block flex-1 min-w-0">
+          <span class="text-[10px] text-dim">Tool</span>
+          <select id="toolSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+            <option value="">Loading&hellip;</option>
+          </select>
+        </label>
+        <label class="block flex-1 min-w-0">
+          <span class="text-[10px] text-dim">Thickness</span>
+          <select id="thicknessSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
+            <option value="">Loading&hellip;</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="h-px bg-border"></div>
+
     <!-- Auto-upload toggle -->
     <div class="px-3 py-3 flex items-start justify-between gap-2">
       <div class="min-w-0">
@@ -248,23 +275,66 @@
     logWindow.scrollTop = logWindow.scrollHeight;
   }
 
-  // ---- Simulated connection to the Parts Tracker service ---------------
-  async function connect() {
-    log('[System] Initializing bridge&hellip;');
-    await delay(500);
-    log('[System] Handshaking with Parts Tracker API&hellip;');
-    await delay(700);
+  const projectSelect = el('projectSelect');
+  const toolSelect = el('toolSelect');
+  const thicknessSelect = el('thicknessSelect');
 
-    state.connected = true;
+  function setStatus(text, kind) {
+    const led = { good: ['bg-good', 'rgba(21,128,61,0.45)'], bad: ['bg-bad', 'rgba(220,38,38,0.45)'] }[kind];
     ledPing.classList.add('hidden');
-    ledCore.classList.remove('bg-amber');
-    ledCore.classList.add('bg-good');
-    ledCore.style.boxShadow = '0 0 6px 1px rgba(21,128,61,0.45)';
-    statusText.textContent = 'Connected to tracker';
-    statusText.classList.remove('text-secondary');
-    statusText.classList.add('text-good');
+    ledCore.classList.remove('bg-amber', 'bg-good', 'bg-bad');
+    ledCore.classList.add(led[0]);
+    ledCore.style.boxShadow = `0 0 6px 1px ${led[1]}`;
+    statusText.textContent = text;
+    statusText.classList.remove('text-secondary', 'text-good', 'text-bad');
+    statusText.classList.add(kind === 'good' ? 'text-good' : 'text-bad');
+  }
 
-    log('[System] Connected.', 'success');
+  function fillSelect(select, items, placeholder) {
+    select.innerHTML = '';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = items.length ? placeholder : 'None found';
+    select.appendChild(blank);
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name;
+      select.appendChild(option);
+    }
+    select.disabled = items.length === 0;
+  }
+
+  // ---- Real connection: load projects/tools/thicknesses from LUNA Parts --
+  // Read-only. The server holds the API key and does the actual request.
+  async function connect() {
+    log('[System] Loading lists from LUNA Parts&hellip;');
+
+    try {
+      const res = await fetch('/api/luna/options', { credentials: 'include' });
+      const body = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        setStatus('Not logged in to Onshape', 'bad');
+        log('[System] Log in with Onshape first: <a class="underline" href="/oauth/login">connect</a>', 'error');
+        return;
+      }
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      fillSelect(projectSelect, body.projects, 'Choose a project');
+      fillSelect(toolSelect, body.tools, 'Any');
+      fillSelect(thicknessSelect, body.thicknesses, 'Any');
+
+      state.connected = true;
+      setStatus('Connected to LUNA Parts', 'good');
+      log(`[System] Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
+    } catch (err) {
+      setStatus('Could not reach LUNA Parts', 'bad');
+      for (const s of [projectSelect, toolSelect, thicknessSelect]) {
+        s.innerHTML = '<option value="">Unavailable</option>';
+      }
+      log(`[System] ${err.message}`, 'error');
+    }
   }
 
   // ---- Simulated Onshape part-selection event ---------------------------

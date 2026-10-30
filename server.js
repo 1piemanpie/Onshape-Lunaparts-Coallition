@@ -112,6 +112,79 @@ app.get('/api/session', (req, res) => {
   res.json({ connected: Boolean(req.session.onshapeTokens) });
 });
 
+// ---- LUNA Parts ---------------------------------------------------------
+// The API key lives only in Render's env vars and is only ever sent from
+// this server, so the panel (and anyone viewing it) never sees it.
+const LUNA_API_BASE = (process.env.LUNA_PARTS_API_BASE || 'https://build.lunatecs.org/api/v1').replace(/\/+$/, '');
+
+// LUNA Parts returns lists one page at a time; this follows next_page_url
+// until it has everything (capped so a bad response can't loop forever).
+async function lunaGetAll(resource) {
+  const items = [];
+  let url = `${LUNA_API_BASE}/${resource}`;
+
+  for (let page = 0; url && page < 20; page++) {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${process.env.LUNA_PARTS_API_KEY}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const err = new Error(`LUNA Parts ${resource} returned ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+
+    const body = await res.json();
+    items.push(...body.data);
+    url = body.next_page_url;
+  }
+
+  return items;
+}
+
+// Read-only: fetches the lists the panel needs for its dropdowns. Requires
+// an Onshape login so the team's project list isn't public on this URL.
+app.get('/api/luna/options', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+  if (!process.env.LUNA_PARTS_API_KEY) {
+    return res.status(500).json({ error: 'LUNA_PARTS_API_KEY is not set on the server.' });
+  }
+
+  try {
+    const [projects, tools, thicknesses] = await Promise.all([
+      lunaGetAll('projects'),
+      lunaGetAll('tools'),
+      lunaGetAll('material-thicknesses'),
+    ]);
+
+    res.json({
+      projects: projects
+        .filter((p) => !p.completed_at)
+        .map((p) => ({ id: p.id, name: p.name, prefix: p.part_number_prefix })),
+      tools: tools
+        .filter((t) => t.is_active)
+        .sort((a, b) => a.order - b.order)
+        .map((t) => ({ id: t.id, name: t.name })),
+      thicknesses: thicknesses
+        .sort((a, b) => a.order - b.order)
+        .map((t) => ({ id: t.id, name: t.name })),
+    });
+  } catch (err) {
+    console.error('LUNA Parts request failed:', err);
+    const message = err.status === 401
+      ? 'LUNA Parts rejected the API key.'
+      : err.status === 403
+        ? 'The API key\'s user isn\'t allowed to read this.'
+        : 'Could not reach LUNA Parts.';
+    res.status(502).json({ error: message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Parts Tracker Bridge listening on port ${PORT}`);
 });
