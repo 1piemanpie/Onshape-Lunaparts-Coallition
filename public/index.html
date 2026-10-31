@@ -357,8 +357,14 @@
       if (event.origin !== ONSHAPE_ORIGIN || !event.data) return;
       if (event.data.messageName !== 'SELECTION') return;
 
-      const picked = (event.data.selections || []).find((s) => s.selectionId);
-      if (picked) loadSelectedPart(picked);
+      const selections = event.data.selections || [];
+      const picked = selections.find((s) => s.selectionId);
+      if (picked) {
+        loadSelectedPart(picked);
+      } else if (selections.length) {
+        // Logged so a screenshot of the Sync log shows what Onshape sent.
+        log(`Selection without an ID: ${JSON.stringify(selections[0]).slice(0, 120)}`, 'error');
+      }
     });
 
     window.parent.postMessage({
@@ -381,15 +387,28 @@
       if (lookup !== lookupCounter) return;
       if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
 
-      // Part names are the team's part numbers (e.g. "E05"), so both match.
-      el('nameInput').value = body.name;
+      // Another face of the same part keeps whatever was typed; a different
+      // part starts from a clean form so e.g. quantity doesn't carry over.
+      if (body.partId !== state.partId) resetPartFields();
+      state.partId = body.partId;
+
+      // The Onshape part name is the team's part number (e.g. "E05"). The
+      // LUNA "Name" is a separate description the user types.
       el('partNumberInput').value = body.name;
       el('materialInput').value = body.material || '';
       pickDrawingFor(body.name);
-      log(`Part loaded: ${body.name}`, 'success');
+      log(`Part loaded: ${body.name} (via ${body.via})`, 'success');
     } catch (err) {
       if (lookup === lookupCounter) log(err.message, 'error');
     }
+  }
+
+  // Everything except Project, which stays put across parts.
+  function resetPartFields() {
+    el('partForm').reset();
+    projectSelect.value = state.projectId || '';
+    parentSelect.value = '';
+    drawingSelect.value = '';
   }
 
   // ---- Drawing picker ------------------------------------------------------
@@ -427,6 +446,7 @@
   }
 
   function rememberProject(projectId) {
+    state.projectId = projectId;
     const key = projectKey();
     if (!key) return;
     try {
@@ -441,6 +461,7 @@
     try { saved = key && localStorage.getItem(key); } catch (err) { /* storage blocked */ }
     if (saved && [...projectSelect.options].some((o) => o.value === saved)) {
       projectSelect.value = saved;
+      state.projectId = saved;
       loadAssemblies(saved);
       log(`Project remembered for this document: ${projectSelect.selectedOptions[0].textContent}`);
     }
@@ -451,7 +472,7 @@
     state.mockIndex = (state.mockIndex + 1) % MOCK_PARTS.length;
     const part = MOCK_PARTS[state.mockIndex];
 
-    el('nameInput').value = part.name;
+    resetPartFields();
     el('partNumberInput').value = part.name;
     el('materialInput').value = part.material;
     pickDrawingFor(part.name);

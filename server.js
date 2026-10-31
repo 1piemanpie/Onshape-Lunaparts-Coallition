@@ -152,12 +152,34 @@ async function onshapeFetch(req, path, options = {}) {
   return res.json();
 }
 
-// Onshape's selection messages give the ID of whatever was clicked (a
-// face, edge, vertex, or the part itself). This asks the Part Studio which
-// part owns that entity, then returns that part's name and material.
+// Onshape's selection messages give the ID of whatever was clicked: the
+// part itself (feature tree) or a face/edge/vertex (3D view). We work out
+// which part that belongs to, then return the part's name and material.
+//
+// bodydetails lists every part with the IDs of its faces, edges and
+// vertices, so a 3D-view click can be matched directly. FeatureScript's
+// qOwnerBody is a fallback for anything bodydetails doesn't list.
 const OWNER_BODY_SCRIPT = `function(context is Context, queries) {
   return transientQueriesToStrings(evaluateQuery(context, qOwnerBody(queries.id)));
 }`;
+
+function bodyOwning(bodyDetails, entityId) {
+  return (bodyDetails.bodies || []).find((body) =>
+    ['faces', 'edges', 'vertices'].some((kind) =>
+      (body[kind] || []).some((entity) => entity.id === entityId)));
+}
+
+async function ownerViaFeatureScript(req, dwe, selectionId) {
+  const evaluated = await onshapeFetch(req, `/partstudios/${dwe}/featurescript`, {
+    method: 'POST',
+    body: JSON.stringify({
+      script: OWNER_BODY_SCRIPT,
+      queries: [{ key: 'id', value: [selectionId] }],
+    }),
+  });
+  const ids = (evaluated.result && evaluated.result.value) || [];
+  return ids.map((v) => v.value)[0] || null;
+}
 
 app.get('/api/onshape/selected-part', async (req, res) => {
   const ctx = req.session.onshapeContext;
@@ -172,32 +194,46 @@ app.get('/api/onshape/selected-part', async (req, res) => {
   const dwe = `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
 
   try {
-    const evaluated = await onshapeFetch(req, `/partstudios/${dwe}/featurescript`, {
-      method: 'POST',
-      body: JSON.stringify({
-        script: OWNER_BODY_SCRIPT,
-        queries: [{ key: 'id', value: [selectionId] }],
-      }),
-    });
-    const ownerIds = (evaluated.result && evaluated.result.value || []).map((v) => v.value);
-
     const parts = await onshapeFetch(req, `/parts/${dwe}`);
-    // If the click was on the part itself, its own ID is the part ID.
-    const part = parts.find((p) => ownerIds.includes(p.partId) || p.partId === selectionId);
+
+    // Clicked the part itself: its ID is the part ID.
+    let partId = parts.some((p) => p.partId === selectionId) ? selectionId : null;
+    let via = 'part';
+
+    if (!partId) {
+      const details = await onshapeFetch(req, `/partstudios/${dwe}/bodydetails`);
+      const body = bodyOwning(details, selectionId);
+      if (body) {
+        partId = body.id;
+        via = 'bodydetails';
+      }
+    }
+
+    if (!partId) {
+      try {
+        partId = await ownerViaFeatureScript(req, dwe, selectionId);
+        via = 'featurescript';
+      } catch (err) {
+        console.error('FeatureScript owner lookup failed:', err);
+      }
+    }
+
+    const part = parts.find((p) => p.partId === partId);
     if (!part) {
-      return res.status(404).json({ error: 'That selection isn\'t on a part in this Part Studio.' });
+      return res.status(404).json({ error: `Couldn't find which part ${selectionId} belongs to.` });
     }
 
     res.json({
       partId: part.partId,
       name: part.name,
       material: part.material ? part.material.displayName : null,
+      via,
     });
   } catch (err) {
     console.error('Onshape selection lookup failed:', err);
     const message = err.status === 401
       ? 'Your Onshape login expired. Close and reopen the panel.'
-      : 'Could not read that part from Onshape.';
+      : `Could not read that part from Onshape (${err.status || 'network error'}).`;
     res.status(502).json({ error: message });
   }
 });
@@ -210,10 +246,14 @@ app.get('/api/onshape/drawings', async (req, res) => {
   }
 
   try {
+    // Onshape drawings are "application" elements, not their own element
+    // type, so list everything and keep the ones whose data type is a drawing.
     const elements = await onshapeFetch(req,
-      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements?elementType=DRAWING`);
+      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements`);
     res.json({
       drawings: elements
+        .filter((e) => e.elementType === 'DRAWING'
+          || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')))
         .map((e) => ({ id: e.id, name: e.name }))
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
     });
