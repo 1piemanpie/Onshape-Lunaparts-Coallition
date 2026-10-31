@@ -35,7 +35,7 @@
     font-size: 13px;
   }
 
-  .panel { max-width: 340px; margin: 0 auto; padding: 12px; }
+  .panel { padding: 12px; }
 
   .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .head h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
@@ -205,6 +205,13 @@
     </div>
 
     <div class="field full">
+      <label for="drawingSelect">Drawing</label>
+      <!-- Picked automatically when a part is clicked (e.g. part E05 ->
+           "E05 Drawing 1"); exported to PDF and attached in a later step. -->
+      <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
+    </div>
+
+    <div class="field full">
       <label for="descriptionInput">Description</label>
       <textarea id="descriptionInput" rows="2"></textarea>
     </div>
@@ -234,7 +241,7 @@
     { name: 'Mount_Left',     material: 'A36 Steel',           thickness: '1/4' },
   ];
 
-  const state = { connected: false, context: null, mockIndex: -1 };
+  const state = { connected: false, context: null, mockIndex: -1, drawings: [] };
 
   const el = (id) => document.getElementById(id);
   const statusBox = el('status');
@@ -243,6 +250,7 @@
   const toolSelect = el('toolSelect');
   const thicknessSelect = el('thicknessSelect');
   const parentSelect = el('parentSelect');
+  const drawingSelect = el('drawingSelect');
   const logWindow = el('logWindow');
 
   function log(message, kind) {
@@ -303,6 +311,13 @@
       log(session.context
         ? `Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
         : 'Not opened from Onshape (no document info).');
+      if (session.context) {
+        restoreProject();
+        loadDrawings();
+        listenForSelections(session.context);
+      } else {
+        fillSelect(drawingSelect, [], 'Only available inside Onshape');
+      }
     } catch (err) {
       setStatus('Could not reach LUNA Parts', 'bad');
       for (const s of [projectSelect, toolSelect, thicknessSelect]) {
@@ -329,13 +344,117 @@
     }
   }
 
+  // ---- Real Onshape selections ------------------------------------------
+  // Onshape tells an embedded panel what the user clicked via postMessage,
+  // but only after the panel introduces itself with 'applicationInit'.
+  // A click on a face/edge/vertex in the 3D view arrives as that entity's
+  // ID; the server works out which part owns it.
+  const ONSHAPE_ORIGIN = 'https://cad.onshape.com';
+  let lookupCounter = 0;
+
+  function listenForSelections(context) {
+    window.addEventListener('message', (event) => {
+      if (event.origin !== ONSHAPE_ORIGIN || !event.data) return;
+      if (event.data.messageName !== 'SELECTION') return;
+
+      const picked = (event.data.selections || []).find((s) => s.selectionId);
+      if (picked) loadSelectedPart(picked);
+    });
+
+    window.parent.postMessage({
+      documentId: context.documentId,
+      workspaceId: context.workspaceId,
+      elementId: context.elementId,
+      messageName: 'applicationInit',
+    }, ONSHAPE_ORIGIN);
+    log('Listening for part selections in Onshape.');
+  }
+
+  async function loadSelectedPart(selection) {
+    // Clicks can arrive faster than lookups finish; only the latest one wins.
+    const lookup = ++lookupCounter;
+    log(`Selected ${(selection.entityType || 'entity').toLowerCase()} ${selection.selectionId}&hellip;`);
+
+    try {
+      const res = await fetch(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selection.selectionId)}`, { credentials: 'include' });
+      const body = await res.json();
+      if (lookup !== lookupCounter) return;
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      // Part names are the team's part numbers (e.g. "E05"), so both match.
+      el('nameInput').value = body.name;
+      el('partNumberInput').value = body.name;
+      el('materialInput').value = body.material || '';
+      pickDrawingFor(body.name);
+      log(`Part loaded: ${body.name}`, 'success');
+    } catch (err) {
+      if (lookup === lookupCounter) log(err.message, 'error');
+    }
+  }
+
+  // ---- Drawing picker ------------------------------------------------------
+  async function loadDrawings() {
+    try {
+      const res = await fetch('/api/onshape/drawings', { credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+      state.drawings = body.drawings;
+      fillSelect(drawingSelect, body.drawings, body.drawings.length ? 'No drawing' : 'No drawings in this document');
+    } catch (err) {
+      fillSelect(drawingSelect, [], 'Unavailable');
+      log(err.message, 'error');
+    }
+  }
+
+  // Drawings are named after their part ("E05 Drawing 1" for part E05), so
+  // pick the drawing whose first word matches the part name's first word.
+  function pickDrawingFor(partName) {
+    const key = firstWord(partName);
+    const match = (state.drawings || []).find((d) => firstWord(d.name) === key);
+    drawingSelect.value = match ? match.id : '';
+    if (match) log(`Drawing matched: ${match.name}`);
+  }
+
+  function firstWord(text) {
+    return String(text || '').trim().split(/\s+/)[0].toLowerCase();
+  }
+
+  // ---- Remember the project per Onshape document --------------------------
+  // Stored in this browser only; it just saves re-picking the project every
+  // time the panel opens. Changing the dropdown updates it.
+  function projectKey() {
+    return state.context ? `lunaProject:${state.context.documentId}` : null;
+  }
+
+  function rememberProject(projectId) {
+    const key = projectKey();
+    if (!key) return;
+    try {
+      if (projectId) localStorage.setItem(key, projectId);
+      else localStorage.removeItem(key);
+    } catch (err) { /* storage blocked; nothing to remember */ }
+  }
+
+  function restoreProject() {
+    const key = projectKey();
+    let saved = null;
+    try { saved = key && localStorage.getItem(key); } catch (err) { /* storage blocked */ }
+    if (saved && [...projectSelect.options].some((o) => o.value === saved)) {
+      projectSelect.value = saved;
+      loadAssemblies(saved);
+      log(`Project remembered for this document: ${projectSelect.selectedOptions[0].textContent}`);
+    }
+  }
+
   // ---- Simulated Onshape part selection ----------------------------------
   function fillDemoPart() {
     state.mockIndex = (state.mockIndex + 1) % MOCK_PARTS.length;
     const part = MOCK_PARTS[state.mockIndex];
 
     el('nameInput').value = part.name;
+    el('partNumberInput').value = part.name;
     el('materialInput').value = part.material;
+    pickDrawingFor(part.name);
     // Match the thickness to LUNA's list by name where one lines up.
     const match = [...thicknessSelect.options].find((o) => o.value && o.textContent.includes(part.thickness));
     thicknessSelect.value = match ? match.value : '';
@@ -343,7 +462,10 @@
     log(`Demo part filled: ${part.name}`);
   }
 
-  projectSelect.addEventListener('change', () => loadAssemblies(projectSelect.value));
+  projectSelect.addEventListener('change', () => {
+    rememberProject(projectSelect.value);
+    loadAssemblies(projectSelect.value);
+  });
   el('simulateBtn').addEventListener('click', fillDemoPart);
 
   connect();
