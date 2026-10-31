@@ -205,6 +205,31 @@ app.get('/api/luna/options', async (req, res) => {
   }
 });
 
+// Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
+// The API mentions a project_id filter without documenting it, so we pass
+// it and also filter here in case it's ignored.
+app.get('/api/luna/assemblies', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+  const projectId = Number(req.query.project_id);
+  if (!Number.isInteger(projectId) || projectId <= 0) {
+    return res.status(400).json({ error: 'project_id is required.' });
+  }
+
+  try {
+    const parts = await lunaGetAll(`parts?project_id=${projectId}`);
+    res.json({
+      assemblies: parts
+        .filter((p) => p.project_id === projectId && p.type === 'assembly')
+        .map((p) => ({ id: p.id, name: p.name, partNumber: p.part_number })),
+    });
+  } catch (err) {
+    console.error('LUNA Parts request failed:', err);
+    res.status(502).json({ error: 'Could not load assemblies from LUNA Parts.' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Parts Tracker Bridge listening on port ${PORT}`);
 });

@@ -3,312 +3,280 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Parts Tracker Bridge — Onshape App</title>
+<title>Parts Tracker Bridge</title>
 
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  // Design tokens matched to the LUNA Parts dashboard: light surfaces,
-  // a dark icon-badge + gold accent (echoing LUNA's own logo lockup),
-  // plain-case gray labels instead of the old uppercase/mono HUD look.
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          canvas: '#F4F5F7',
-          surface: '#FFFFFF',
-          surface2: '#EEF0F3',
-          border: '#E3E6EA',
-          borderStrong: '#CDD2D9',
-          primary: '#16181D',
-          secondary: '#5B6270',
-          dim: '#9AA1AC',
-          accent: '#B45309',
-          accentSoft: '#FEF3C7',
-          amber: '#D97706',
-          good: '#15803D',
-          bad: '#DC2626',
-        },
-        fontFamily: {
-          mono: ['"IBM Plex Mono"', 'monospace'],
-          sans: ['Inter', 'sans-serif'],
-        },
-        boxShadow: {
-          glow: '0 0 0 3px rgba(180,83,9,0.16)',
-          panel: '0 8px 24px rgba(20,22,26,0.12)',
-        },
-      },
-    },
-  };
-</script>
+<!-- Same font LUNA Parts uses, so the panel reads as part of the tracker. -->
+<link rel="preconnect" href="https://fonts.bunny.net" />
+<link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet" />
 
 <style>
-  /* Preview-page-only backdrop, so the 300px panel reads as a sidebar
-     floating over a light app canvas. Delete this <style> block (and the
-     body padding) when you drop the panel into the real Onshape app
-     iframe — only the <div id="partsTrackerPanel"> below is the actual app. */
+  /* Styled after LUNA Parts' own "Create Part" form, condensed to fit
+     Onshape's ~300px right panel: two fields per row where they're short. */
+  :root {
+    --text: #1b1b18;
+    --label: #3f3f46;
+    --muted: #71717a;
+    --border: #e4e4e7;
+    --field-bg: #ffffff;
+    --readonly-bg: #f3f4f6;
+    --required: #ef4444;
+    --good: #16a34a;
+    --bad: #dc2626;
+    --pending: #d97706;
+  }
+
+  * { box-sizing: border-box; }
+
   body {
-    background-color: #E9EBEE;
-    background-image: radial-gradient(circle, rgba(22,24,29,0.06) 1px, transparent 1px);
-    background-size: 18px 18px;
+    margin: 0;
+    background: #ffffff;
+    color: var(--text);
+    font-family: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
   }
 
-  #logWindow::-webkit-scrollbar { width: 6px; }
-  #logWindow::-webkit-scrollbar-track { background: transparent; }
-  #logWindow::-webkit-scrollbar-thumb { background: #CDD2D9; border-radius: 3px; }
-  #logWindow { scrollbar-width: thin; scrollbar-color: #CDD2D9 transparent; }
+  .panel { max-width: 340px; margin: 0 auto; padding: 12px; }
 
-  @media (prefers-reduced-motion: reduce) {
-    #ledPing { animation: none !important; }
-    * { transition-duration: 0.01ms !important; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .head h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+
+  .status { display: flex; align-items: center; gap: 6px; margin: 4px 0 10px; font-size: 11.5px; color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pending); flex-shrink: 0; }
+  .status.good .dot { background: var(--good); }
+  .status.bad .dot { background: var(--bad); }
+  .status.bad { color: var(--bad); }
+
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px 8px;
   }
+
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field.full { grid-column: 1 / -1; }
+
+  label { font-size: 12px; font-weight: 500; color: var(--label); }
+  .req { color: var(--required); margin-left: 1px; }
+
+  input, select, textarea {
+    width: 100%;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--text);
+    background: var(--field-bg);
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 6px 8px;
+    box-shadow: 0 0 0 1px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.08);
+    outline: none;
+  }
+  select { padding-right: 4px; }
+  textarea { resize: vertical; min-height: 44px; }
+  input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 2px rgba(24, 24, 27, 0.35); }
+  select:disabled, input:disabled { background: var(--readonly-bg); color: var(--muted); }
+
+  .actions { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .btn {
+    width: 100%;
+    font: inherit;
+    font-weight: 600;
+    font-size: 13px;
+    color: #ffffff;
+    background: #1b1b18;
+    border: none;
+    border-radius: 7px;
+    padding: 8px;
+    cursor: pointer;
+  }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
+
+  .link {
+    font: inherit;
+    font-size: 11px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  details { margin-top: 12px; }
+  summary { font-size: 11.5px; color: var(--muted); cursor: pointer; }
+  #logWindow {
+    margin-top: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  #logWindow .time { color: var(--muted); }
+  #logWindow .success { color: var(--good); }
+  #logWindow .error { color: var(--bad); }
 </style>
 </head>
 
-<body class="min-h-screen flex items-start justify-center p-8">
+<body>
+<div class="panel">
 
-  <!-- ================================================================
-       THE APP: everything inside this div is what gets embedded in
-       Onshape's right-sidebar iframe. Fixed at 300px to match Onshape's
-       panel width exactly.
-       ================================================================ -->
-  <div id="partsTrackerPanel"
-       class="w-[300px] bg-canvas border border-border rounded-lg shadow-panel text-primary font-sans text-[13px] overflow-hidden">
-
-    <!-- Header -->
-    <div class="px-3 pt-3 pb-2.5 bg-surface">
-      <div class="flex items-start justify-between">
-        <div class="flex items-center gap-2">
-          <span class="flex items-center justify-center w-6 h-6 rounded-md bg-[#16181D] shrink-0">
-            <svg class="text-[#F2C230]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M7 7h11l-3-3M17 17H6l3 3"/>
-            </svg>
-          </span>
-          <div>
-            <h1 class="font-sans font-semibold text-[13px] leading-none">Parts Tracker Bridge</h1>
-            <p class="mt-1 text-[10.5px] text-dim leading-none">Onshape &rarr; LUNA Parts</p>
-          </div>
-        </div>
-        <span class="font-mono text-[9px] text-dim border border-border rounded px-1 py-0.5 leading-none">v0.1</span>
-      </div>
-
-      <div class="mt-2.5 flex items-center gap-1.5">
-        <span class="relative flex h-2 w-2">
-          <span id="ledPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber opacity-75"></span>
-          <span id="ledCore" class="relative inline-flex rounded-full h-2 w-2 bg-amber"></span>
-        </span>
-        <span id="statusText" class="text-[11.5px] text-secondary">Connecting to tracker&hellip;</span>
-      </div>
-    </div>
-
-    <div class="h-px bg-border"></div>
-
-    <!-- Selected Part -->
-    <div class="px-3 py-3">
-      <div class="flex items-center justify-between mb-2">
-        <h2 class="text-[11.5px] text-secondary">Selected Part</h2>
-        <button id="simulateBtn"
-          class="text-[10px] text-accent/90 hover:text-accent border border-dashed border-accent/40 hover:border-accent/70 rounded px-1.5 py-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-          Simulate select
-        </button>
-      </div>
-
-      <div class="relative">
-        <!-- viewfinder corner marks: frames the data being read off the CAD part -->
-        <span class="pointer-events-none absolute -top-1 -left-1 w-2.5 h-2.5 border-t border-l border-accent/40"></span>
-        <span class="pointer-events-none absolute -top-1 -right-1 w-2.5 h-2.5 border-t border-r border-accent/40"></span>
-        <span class="pointer-events-none absolute -bottom-1 -left-1 w-2.5 h-2.5 border-b border-l border-accent/40"></span>
-        <span class="pointer-events-none absolute -bottom-1 -right-1 w-2.5 h-2.5 border-b border-r border-accent/40"></span>
-
-        <div id="partCard" class="border border-border bg-surface rounded-md p-2.5 transition-shadow duration-500">
-          <!-- Empty state -->
-          <div id="emptyState" class="py-3 text-center">
-            <p class="text-[11.5px] text-secondary">No part selected</p>
-            <p class="mt-1 text-[10px] text-dim leading-snug">Select a part on the Onshape canvas to read its properties here.</p>
-          </div>
-          <!-- Filled state -->
-          <div id="filledState" class="hidden divide-y divide-border">
-            <div class="py-1.5 first:pt-0">
-              <p class="text-[10px] text-dim">Part name</p>
-              <p id="fPartName" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
-            </div>
-            <div class="py-1.5">
-              <p class="text-[10px] text-dim">Material</p>
-              <p id="fMaterial" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
-            </div>
-            <div class="py-1.5">
-              <p class="text-[10px] text-dim">Thickness</p>
-              <p id="fThickness" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
-            </div>
-            <div class="py-1.5 last:pb-0">
-              <p class="text-[10px] text-dim">Assoc. drawing</p>
-              <p id="fDrawing" class="text-[12.5px] font-medium text-primary mt-0.5 truncate">&mdash;</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="h-px bg-border"></div>
-
-    <!-- Destination in LUNA Parts (lists come from /api/luna/options) -->
-    <div class="px-3 py-3 space-y-2">
-      <h2 class="text-[11.5px] text-secondary">Send to</h2>
-      <label class="block">
-        <span class="text-[10px] text-dim">Project</span>
-        <select id="projectSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-          <option value="">Loading&hellip;</option>
-        </select>
-      </label>
-      <div class="flex gap-2">
-        <label class="block flex-1 min-w-0">
-          <span class="text-[10px] text-dim">Tool</span>
-          <select id="toolSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-            <option value="">Loading&hellip;</option>
-          </select>
-        </label>
-        <label class="block flex-1 min-w-0">
-          <span class="text-[10px] text-dim">Thickness</span>
-          <select id="thicknessSelect" disabled class="mt-0.5 w-full bg-surface border border-border rounded-md px-2 py-1 text-[12px] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-            <option value="">Loading&hellip;</option>
-          </select>
-        </label>
-      </div>
-    </div>
-
-    <div class="h-px bg-border"></div>
-
-    <!-- Auto-upload toggle -->
-    <div class="px-3 py-3 flex items-start justify-between gap-2">
-      <div class="min-w-0">
-        <p class="text-[11.5px] font-medium">Auto-upload</p>
-        <p class="text-[10px] text-dim mt-0.5 leading-snug">Push DXF to tracker on every selection</p>
-      </div>
-      <button id="autoToggle" type="button" role="switch" aria-pressed="false"
-        class="relative shrink-0 w-9 h-5 rounded-full bg-surface2 border border-border transition-colors mt-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-        <span id="toggleKnob" class="absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full bg-dim transition-transform duration-200"></span>
-      </button>
-    </div>
-
-    <div class="px-3 pb-3 -mt-1">
-      <button id="manualUploadBtn" disabled
-        class="w-full text-[11.5px] font-medium border border-border text-dim rounded-md py-1.5 transition-all duration-150 hover:border-borderStrong hover:text-secondary disabled:opacity-40 disabled:pointer-events-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50">
-        Push to tracker
-      </button>
-    </div>
-
-    <div class="h-px bg-border"></div>
-
-    <!-- Sync log -->
-    <div class="px-3 py-3">
-      <div class="flex items-center justify-between mb-1.5">
-        <h2 class="text-[11.5px] text-secondary">Sync log</h2>
-        <button id="clearLogBtn" class="text-[10px] text-dim hover:text-secondary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded">Clear</button>
-      </div>
-      <div id="logWindow" class="h-32 overflow-y-auto bg-surface border border-border rounded-md p-2 font-mono text-[10px] leading-relaxed space-y-0.5"></div>
-    </div>
-
-    <div class="px-3 pb-3 -mt-1">
-      <p class="text-[9px] text-dim text-center">Mock bridge &mdash; wire up the Onshape &amp; tracker APIs to go live.</p>
-    </div>
-
+  <div class="head">
+    <h1>Create Part</h1>
+    <button id="simulateBtn" class="link" type="button">Fill demo part</button>
   </div>
-  <!-- ============================ /THE APP ============================ -->
+  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span></div>
+
+  <form id="partForm" class="card" autocomplete="off">
+    <div class="field full">
+      <label for="projectSelect">Project</label>
+      <select id="projectSelect" disabled><option value="">Loading&hellip;</option></select>
+    </div>
+
+    <div class="field">
+      <label for="nameInput">Name<span class="req">*</span></label>
+      <input id="nameInput" type="text" maxlength="255" />
+    </div>
+    <div class="field">
+      <label for="partNumberInput">Part Number</label>
+      <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
+    </div>
+
+    <div class="field">
+      <label for="statusSelect">Status<span class="req">*</span></label>
+      <!-- LUNA Parts' API has no way to list statuses yet, so this is fixed
+           until we get the real status IDs from the LUNA Parts team. -->
+      <select id="statusSelect" disabled><option value="">Designed</option></select>
+    </div>
+    <div class="field">
+      <label for="typeSelect">Type<span class="req">*</span></label>
+      <select id="typeSelect">
+        <option value="part">Part</option>
+        <option value="assembly">Assembly</option>
+        <option value="purchased">Purchased</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="toolSelect">Tool</label>
+      <select id="toolSelect" disabled><option value="">Loading&hellip;</option></select>
+    </div>
+    <div class="field">
+      <label for="prioritySelect">Priority</label>
+      <select id="prioritySelect">
+        <option value="0">Low</option>
+        <option value="1" selected>Normal</option>
+        <option value="2">High</option>
+      </select>
+    </div>
+
+    <div class="field full">
+      <label for="parentSelect">Parent Assembly</label>
+      <select id="parentSelect" disabled><option value="">No Parent Assembly</option></select>
+    </div>
+
+    <div class="field full">
+      <label for="materialInput">Material</label>
+      <input id="materialInput" type="text" maxlength="255" />
+    </div>
+
+    <div class="field">
+      <label for="thicknessSelect">Thickness</label>
+      <select id="thicknessSelect" disabled><option value="">Loading&hellip;</option></select>
+    </div>
+    <div class="field">
+      <label for="quantityInput">Quantity<span class="req">*</span></label>
+      <input id="quantityInput" type="number" min="0" step="1" value="1" />
+    </div>
+
+    <div class="field">
+      <label for="cutLengthInput">Cut Length</label>
+      <input id="cutLengthInput" type="number" min="0" step="any" />
+    </div>
+    <div class="field">
+      <label for="leadTimeInput">Lead Time (Days)</label>
+      <input id="leadTimeInput" type="number" min="0" step="1" />
+    </div>
+
+    <div class="field full">
+      <label for="descriptionInput">Description</label>
+      <textarea id="descriptionInput" rows="2"></textarea>
+    </div>
+  </form>
+
+  <div class="actions">
+    <button id="createBtn" class="btn" type="button" disabled>Create Part</button>
+    <p class="hint">Saving to LUNA Parts is the next step &mdash; this button isn&rsquo;t wired up yet.</p>
+  </div>
+
+  <details>
+    <summary>Sync log</summary>
+    <div id="logWindow"></div>
+  </details>
+
+</div>
 
 <script>
 (function () {
   // --------------------------------------------------------------------
-  // MOCK DATA — stands in for real Onshape selection events.
-  //
-  // In a real Onshape app, part data comes from Onshape's Application
-  // Extensibility APIs: you'd listen for a selection-changed message
-  // from the Onshape client (via window.postMessage or the onshape
-  // client SDK) and fetch part/metadata properties from the Onshape
-  // REST API (Metadata + Part Studio endpoints). Replace
-  // `selectNextMockPart()` with that listener, and replace
-  // `runUploadSequence()` with real calls to (1) Onshape's DXF export
-  // endpoint and (2) your tracker backend's upload endpoint.
+  // MOCK DATA — stands in for a real Onshape part selection until the
+  // panel reads parts from the Onshape API (the next functional step).
   // --------------------------------------------------------------------
   const MOCK_PARTS = [
-    { name: 'Bracket_04',     material: '6061-T6 Aluminum',    thickness: '0.125 in', drawing: 'BRK-04-REV3' },
-    { name: 'Gusset_Plate_A', material: '304 Stainless Steel', thickness: '0.190 in', drawing: 'GST-A-REV1' },
-    { name: 'Mount_Left',     material: 'A36 Steel',           thickness: '0.250 in', drawing: 'MNT-L-REV5' },
+    { name: 'Bracket_04',     material: '6061-T6 Aluminum',    thickness: '1/8' },
+    { name: 'Gusset_Plate_A', material: '304 Stainless Steel', thickness: '3/16' },
+    { name: 'Mount_Left',     material: 'A36 Steel',           thickness: '1/4' },
   ];
 
-  const state = { connected: false, autoUpload: false, part: null, mockIndex: -1, uploading: false };
+  const state = { connected: false, context: null, mockIndex: -1 };
 
   const el = (id) => document.getElementById(id);
-  const ledPing = el('ledPing');
-  const ledCore = el('ledCore');
+  const statusBox = el('status');
   const statusText = el('statusText');
-  const emptyState = el('emptyState');
-  const filledState = el('filledState');
-  const partCard = el('partCard');
-  const fPartName = el('fPartName');
-  const fMaterial = el('fMaterial');
-  const fThickness = el('fThickness');
-  const fDrawing = el('fDrawing');
-  const simulateBtn = el('simulateBtn');
-  const autoToggle = el('autoToggle');
-  const toggleKnob = el('toggleKnob');
-  const manualUploadBtn = el('manualUploadBtn');
+  const projectSelect = el('projectSelect');
+  const toolSelect = el('toolSelect');
+  const thicknessSelect = el('thicknessSelect');
+  const parentSelect = el('parentSelect');
   const logWindow = el('logWindow');
-  const clearLogBtn = el('clearLogBtn');
 
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  function log(message, kind = 'system') {
-    const colorClass = {
-      system: 'text-secondary',
-      success: 'text-good',
-      upload: 'text-accent',
-      error: 'text-bad',
-    }[kind] || 'text-secondary';
-
+  function log(message, kind) {
     const time = new Date().toLocaleTimeString('en-US', { hour12: false });
     const line = document.createElement('div');
-    line.className = colorClass;
-    line.innerHTML = `<span class="text-dim">${time}</span> ${message}`;
+    if (kind) line.className = kind;
+    line.innerHTML = `<span class="time">${time}</span> ${message}`;
     logWindow.appendChild(line);
     logWindow.scrollTop = logWindow.scrollHeight;
   }
 
-  const projectSelect = el('projectSelect');
-  const toolSelect = el('toolSelect');
-  const thicknessSelect = el('thicknessSelect');
-
   function setStatus(text, kind) {
-    const led = { good: ['bg-good', 'rgba(21,128,61,0.45)'], bad: ['bg-bad', 'rgba(220,38,38,0.45)'] }[kind];
-    ledPing.classList.add('hidden');
-    ledCore.classList.remove('bg-amber', 'bg-good', 'bg-bad');
-    ledCore.classList.add(led[0]);
-    ledCore.style.boxShadow = `0 0 6px 1px ${led[1]}`;
+    statusBox.className = `status ${kind}`;
     statusText.textContent = text;
-    statusText.classList.remove('text-secondary', 'text-good', 'text-bad');
-    statusText.classList.add(kind === 'good' ? 'text-good' : 'text-bad');
   }
 
-  function fillSelect(select, items, placeholder) {
+  function fillSelect(select, items, placeholder, label = (item) => item.name) {
     select.innerHTML = '';
     const blank = document.createElement('option');
     blank.value = '';
-    blank.textContent = items.length ? placeholder : 'None found';
+    blank.textContent = placeholder;
     select.appendChild(blank);
     for (const item of items) {
       const option = document.createElement('option');
       option.value = item.id;
-      option.textContent = item.name;
+      option.textContent = label(item);
       select.appendChild(option);
     }
     select.disabled = items.length === 0;
   }
 
-  // ---- Real connection: load projects/tools/thicknesses from LUNA Parts --
-  // Read-only. The server holds the API key and does the actual request.
+  // ---- Load projects/tools/thicknesses from LUNA Parts (read-only) -------
   async function connect() {
-    log('[System] Loading lists from LUNA Parts&hellip;');
+    log('Loading lists from LUNA Parts&hellip;');
 
     try {
       const res = await fetch('/api/luna/options', { credentials: 'include' });
@@ -316,98 +284,67 @@
 
       if (res.status === 401) {
         setStatus('Not logged in to Onshape', 'bad');
-        log('[System] Log in with Onshape first: <a class="underline" href="/oauth/login">connect</a>', 'error');
+        log('Log in with Onshape first: <a href="/oauth/login">connect</a>', 'error');
         return;
       }
       if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
 
-      fillSelect(projectSelect, body.projects, 'Choose a project');
-      fillSelect(toolSelect, body.tools, 'Any');
-      fillSelect(thicknessSelect, body.thicknesses, 'Any');
+      fillSelect(projectSelect, body.projects, body.projects.length ? 'Select project' : 'No projects');
+      fillSelect(toolSelect, body.tools, 'Select tool');
+      fillSelect(thicknessSelect, body.thicknesses, 'Select thickness');
 
       state.connected = true;
       setStatus('Connected to LUNA Parts', 'good');
-      log(`[System] Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
+      log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
 
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
       const session = await fetch('/api/session', { credentials: 'include' }).then((r) => r.json());
       state.context = session.context;
       log(session.context
-        ? `[System] Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
-        : '[System] Not opened from Onshape (no document info).');
+        ? `Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
+        : 'Not opened from Onshape (no document info).');
     } catch (err) {
       setStatus('Could not reach LUNA Parts', 'bad');
       for (const s of [projectSelect, toolSelect, thicknessSelect]) {
         s.innerHTML = '<option value="">Unavailable</option>';
       }
-      log(`[System] ${err.message}`, 'error');
+      log(err.message, 'error');
     }
   }
 
-  // ---- Simulated Onshape part-selection event ---------------------------
-  function selectNextMockPart() {
+  // ---- Parent Assembly depends on the chosen project ---------------------
+  async function loadAssemblies(projectId) {
+    fillSelect(parentSelect, [], 'No Parent Assembly');
+    if (!projectId) return;
+
+    try {
+      const res = await fetch(`/api/luna/assemblies?project_id=${encodeURIComponent(projectId)}`, { credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+      fillSelect(parentSelect, body.assemblies, 'No Parent Assembly',
+        (a) => `${a.partNumber} ${a.name}`);
+      parentSelect.disabled = false;
+    } catch (err) {
+      log(err.message, 'error');
+    }
+  }
+
+  // ---- Simulated Onshape part selection ----------------------------------
+  function fillDemoPart() {
     state.mockIndex = (state.mockIndex + 1) % MOCK_PARTS.length;
     const part = MOCK_PARTS[state.mockIndex];
-    state.part = part;
 
-    emptyState.classList.add('hidden');
-    filledState.classList.remove('hidden');
-    fPartName.textContent = part.name;
-    fMaterial.textContent = part.material;
-    fThickness.textContent = part.thickness;
-    fDrawing.textContent = part.drawing;
+    el('nameInput').value = part.name;
+    el('materialInput').value = part.material;
+    // Match the thickness to LUNA's list by name where one lines up.
+    const match = [...thicknessSelect.options].find((o) => o.value && o.textContent.includes(part.thickness));
+    thicknessSelect.value = match ? match.value : '';
 
-    // brief highlight to show the card just refreshed
-    partCard.classList.remove('shadow-glow');
-    void partCard.offsetWidth; // restart the CSS transition
-    partCard.classList.add('shadow-glow');
-
-    log(`[System] Part selected: ${part.name}`);
-    manualUploadBtn.disabled = state.autoUpload || !state.part;
-
-    if (state.autoUpload) runUploadSequence(part);
+    log(`Demo part filled: ${part.name}`);
   }
 
-  // ---- Simulated DXF export + tracker sync ------------------------------
-  async function runUploadSequence(part) {
-    if (state.uploading) return;
-    state.uploading = true;
-
-    log('[System] DXF generated by Onshape API&hellip;');
-    await delay(600);
-    log('[System] Syncing DXF to tracker&hellip;', 'upload');
-    await delay(900);
-    const trackerId = Math.floor(1000 + Math.random() * 9000);
-    log(`[System] Upload complete &mdash; Tracker ID #${trackerId} assigned.`, 'success');
-
-    state.uploading = false;
-  }
-
-  function setAutoUpload(on) {
-    state.autoUpload = on;
-    autoToggle.setAttribute('aria-pressed', String(on));
-    autoToggle.classList.toggle('bg-surface2', !on);
-    autoToggle.classList.toggle('border-border', !on);
-    autoToggle.classList.toggle('bg-accentSoft', on);
-    autoToggle.classList.toggle('border-accent/50', on);
-    toggleKnob.classList.toggle('bg-dim', !on);
-    toggleKnob.classList.toggle('bg-accent', on);
-    toggleKnob.classList.toggle('translate-x-4', on);
-
-    log(`[System] Auto-upload ${on ? 'enabled' : 'disabled'}.`);
-    manualUploadBtn.disabled = state.autoUpload || !state.part;
-  }
-
-  simulateBtn.addEventListener('click', selectNextMockPart);
-  autoToggle.addEventListener('click', () => setAutoUpload(!state.autoUpload));
-  manualUploadBtn.addEventListener('click', () => {
-    if (!state.part || manualUploadBtn.disabled) return;
-    runUploadSequence(state.part);
-  });
-  clearLogBtn.addEventListener('click', () => {
-    logWindow.innerHTML = '';
-    log('[System] Log cleared.');
-  });
+  projectSelect.addEventListener('change', () => loadAssemblies(projectSelect.value));
+  el('simulateBtn').addEventListener('click', fillDemoPart);
 
   connect();
 })();
