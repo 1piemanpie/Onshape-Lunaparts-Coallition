@@ -315,6 +315,7 @@
         restoreProject();
         loadDrawings();
         listenForSelections(session.context);
+        warmPartIndex();
       } else {
         fillSelect(drawingSelect, [], 'Only available inside Onshape');
       }
@@ -376,10 +377,25 @@
     log('Listening for part selections in Onshape.');
   }
 
+  // Loads the Part Studio's part data on the server up front, so the first
+  // click doesn't wait for the (large) download.
+  async function warmPartIndex() {
+    const started = Date.now();
+    try {
+      const res = await fetch('/api/onshape/warm', { method: 'POST', credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+      log(`Ready: ${body.parts} parts loaded from this Part Studio in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+    } catch (err) {
+      log(err.message, 'error');
+    }
+  }
+
   async function loadSelectedPart(selection) {
     // Clicks can arrive faster than lookups finish; only the latest one wins.
     const lookup = ++lookupCounter;
     log(`Selected ${(selection.entityType || 'entity').toLowerCase()} ${selection.selectionId}&hellip;`);
+    setStatus('Loading part\u2026', 'pending');
 
     try {
       const res = await fetch(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selection.selectionId)}`, { credentials: 'include' });
@@ -400,6 +416,8 @@
       log(`Part loaded: ${body.name} (via ${body.via})`, 'success');
     } catch (err) {
       if (lookup === lookupCounter) log(err.message, 'error');
+    } finally {
+      if (lookup === lookupCounter) setStatus('Connected to LUNA Parts', 'good');
     }
   }
 

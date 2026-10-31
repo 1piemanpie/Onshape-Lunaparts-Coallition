@@ -157,16 +157,62 @@ async function onshapeFetch(req, path, options = {}) {
 // which part that belongs to, then return the part's name and material.
 //
 // bodydetails lists every part with the IDs of its faces, edges and
-// vertices, so a 3D-view click can be matched directly. FeatureScript's
-// qOwnerBody is a fallback for anything bodydetails doesn't list.
+// vertices, so a 3D-view click can be matched directly. It's large for a
+// big Part Studio (seconds to download), so it's fetched once into a
+// per-session index and reused; a click it doesn't recognise (e.g. after
+// the model changed) triggers one refresh. FeatureScript's qOwnerBody is a
+// last-resort fallback.
 const OWNER_BODY_SCRIPT = `function(context is Context, queries) {
   return transientQueriesToStrings(evaluateQuery(context, qOwnerBody(queries.id)));
 }`;
 
-function bodyOwning(bodyDetails, entityId) {
-  return (bodyDetails.bodies || []).find((body) =>
-    ['faces', 'edges', 'vertices'].some((kind) =>
-      (body[kind] || []).some((entity) => entity.id === entityId)));
+const PART_INDEX_MAX_AGE_MS = 30 * 1000;
+const partIndexes = new Map();
+
+async function fetchPartIndex(req, dwe) {
+  const [parts, details] = await Promise.all([
+    onshapeFetch(req, `/parts/${dwe}`),
+    onshapeFetch(req, `/partstudios/${dwe}/bodydetails`),
+  ]);
+
+  const partsById = new Map(parts.map((p) => [p.partId, p]));
+  const entityToPart = new Map();
+  for (const body of details.bodies || []) {
+    for (const kind of ['faces', 'edges', 'vertices']) {
+      for (const entity of body[kind] || []) entityToPart.set(entity.id, body.id);
+    }
+  }
+  return { partsById, entityToPart, fetchedAt: Date.now() };
+}
+
+// Concurrent callers share one in-flight download.
+function getPartIndex(req, dwe, { refresh = false } = {}) {
+  const key = `${req.sessionID}:${dwe}`;
+  const cached = partIndexes.get(key);
+  if (cached && !refresh) return cached;
+
+  if (partIndexes.size > 100) partIndexes.clear();
+  const loading = fetchPartIndex(req, dwe);
+  partIndexes.set(key, loading);
+  loading.catch(() => partIndexes.delete(key));
+  return loading;
+}
+
+const backgroundRefreshes = new Set();
+
+function refreshPartIndexInBackground(req, dwe) {
+  const key = `${req.sessionID}:${dwe}`;
+  if (backgroundRefreshes.has(key)) return;
+  backgroundRefreshes.add(key);
+  fetchPartIndex(req, dwe)
+    .then((index) => partIndexes.set(key, Promise.resolve(index)))
+    .catch((err) => console.error('Background part index refresh failed:', err))
+    .finally(() => backgroundRefreshes.delete(key));
+}
+
+function partIdFor(index, selectionId) {
+  if (index.partsById.has(selectionId)) return selectionId;
+  return index.entityToPart.get(selectionId) || null;
 }
 
 async function ownerViaFeatureScript(req, dwe, selectionId) {
@@ -181,11 +227,36 @@ async function ownerViaFeatureScript(req, dwe, selectionId) {
   return ids.map((v) => v.value)[0] || null;
 }
 
-app.get('/api/onshape/selected-part', async (req, res) => {
+function onshapeErrorMessage(err) {
+  return err.status === 401
+    ? 'Your Onshape login expired. Close and reopen the panel.'
+    : `Could not read parts from Onshape (${err.status || 'network error'}).`;
+}
+
+function currentDwe(req) {
   const ctx = req.session.onshapeContext;
-  if (!req.session.onshapeTokens || !ctx) {
-    return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  if (!req.session.onshapeTokens || !ctx) return null;
+  return `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
+}
+
+// Called when the panel opens so the first click is already fast.
+app.post('/api/onshape/warm', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+
+  try {
+    const index = await getPartIndex(req, dwe);
+    res.json({ parts: index.partsById.size });
+  } catch (err) {
+    console.error('Onshape part index load failed:', err);
+    res.status(502).json({ error: onshapeErrorMessage(err) });
   }
+});
+
+app.get('/api/onshape/selected-part', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+
   const selectionId = String(req.query.selectionId || '');
   // Onshape IDs use a base64-like alphabet ("S8O+D", "JH/"), so allow any
   // visible ASCII. The ID is only compared and sent in a JSON body, never put
@@ -194,22 +265,20 @@ app.get('/api/onshape/selected-part', async (req, res) => {
     return res.status(400).json({ error: 'Invalid selection.' });
   }
 
-  const dwe = `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
-
   try {
-    const parts = await onshapeFetch(req, `/parts/${dwe}`);
-
-    // Clicked the part itself: its ID is the part ID.
-    let partId = parts.some((p) => p.partId === selectionId) ? selectionId : null;
-    let via = 'part';
+    let index = await getPartIndex(req, dwe);
+    let partId = partIdFor(index, selectionId);
+    let via = 'cache';
 
     if (!partId) {
-      const details = await onshapeFetch(req, `/partstudios/${dwe}/bodydetails`);
-      const body = bodyOwning(details, selectionId);
-      if (body) {
-        partId = body.id;
-        via = 'bodydetails';
-      }
+      // Unknown ID: the model has probably changed since we last looked.
+      index = await getPartIndex(req, dwe, { refresh: true });
+      partId = partIdFor(index, selectionId);
+      via = 'refresh';
+    } else if (Date.now() - index.fetchedAt > PART_INDEX_MAX_AGE_MS) {
+      // Answer from cache now, but pick up renames/material changes for next
+      // time. The old index keeps serving clicks until the new one is ready.
+      refreshPartIndexInBackground(req, dwe);
     }
 
     if (!partId) {
@@ -221,7 +290,7 @@ app.get('/api/onshape/selected-part', async (req, res) => {
       }
     }
 
-    const part = parts.find((p) => p.partId === partId);
+    const part = index.partsById.get(partId);
     if (!part) {
       return res.status(404).json({ error: `Couldn't find which part ${selectionId} belongs to.` });
     }
@@ -234,10 +303,7 @@ app.get('/api/onshape/selected-part', async (req, res) => {
     });
   } catch (err) {
     console.error('Onshape selection lookup failed:', err);
-    const message = err.status === 401
-      ? 'Your Onshape login expired. Close and reopen the panel.'
-      : `Could not read that part from Onshape (${err.status || 'network error'}).`;
-    res.status(502).json({ error: message });
+    res.status(502).json({ error: onshapeErrorMessage(err) });
   }
 });
 
