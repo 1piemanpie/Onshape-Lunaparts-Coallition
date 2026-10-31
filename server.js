@@ -187,7 +187,10 @@ app.get('/api/onshape/selected-part', async (req, res) => {
     return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
   }
   const selectionId = String(req.query.selectionId || '');
-  if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(selectionId)) {
+  // Onshape IDs use a base64-like alphabet ("S8O+D", "JH/"), so allow any
+  // visible ASCII. The ID is only compared and sent in a JSON body, never put
+  // in a URL path.
+  if (!/^[\x21-\x7E]{1,128}$/.test(selectionId)) {
     return res.status(400).json({ error: 'Invalid selection.' });
   }
 
