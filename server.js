@@ -430,6 +430,164 @@ app.get('/api/luna/assemblies', async (req, res) => {
   }
 });
 
+// The API has no endpoint that lists part statuses, but every part carries
+// a part_status_id, and fetching a single part includes its status. So we
+// collect the IDs in use and look up one example part for each to get the
+// status's name. Statuses rarely change, so the answer is cached.
+const STATUS_CACHE_MS = 10 * 60 * 1000;
+let statusCache = null;
+
+function statusName(part) {
+  const status = part.status || part.part_status || part.partStatus;
+  if (!status || typeof status !== 'object') return null;
+  return status.name || status.label || status.title || null;
+}
+
+async function lunaGet(path) {
+  const res = await fetch(`${LUNA_API_BASE}/${path}`, {
+    headers: {
+      Authorization: `Bearer ${process.env.LUNA_PARTS_API_KEY}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) {
+    const err = new Error(`LUNA Parts ${path} returned ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+async function loadStatuses() {
+  const parts = await lunaGetAll('parts');
+  const examples = new Map();
+  for (const part of parts) {
+    if (!examples.has(part.part_status_id)) examples.set(part.part_status_id, part);
+  }
+
+  const statuses = await Promise.all([...examples].map(async ([id, part]) => {
+    let name = statusName(part);
+    if (!name) {
+      try {
+        name = statusName(await lunaGet(`parts/${part.id}`));
+      } catch (err) {
+        console.error(`Could not look up status ${id}:`, err);
+      }
+    }
+    return { id, name: name || `Status ${id}` };
+  }));
+
+  return statuses.sort((a, b) => a.id - b.id);
+}
+
+app.get('/api/luna/statuses', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+
+  try {
+    if (!statusCache || Date.now() - statusCache.at > STATUS_CACHE_MS) {
+      statusCache = { at: Date.now(), statuses: await loadStatuses() };
+    }
+    res.json({ statuses: statusCache.statuses });
+  } catch (err) {
+    console.error('LUNA Parts status lookup failed:', err);
+    res.status(502).json({ error: 'Could not load part statuses from LUNA Parts.' });
+  }
+});
+
+// Creates the part in LUNA Parts. This writes to the team's real tracker,
+// so it refuses to create a second part with the same part number in the
+// same project (updating an existing part is a separate, later step).
+const PART_TYPES = ['part', 'assembly', 'purchased'];
+
+function optionalNumber(value, { integer = false } = {}) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n))) return NaN;
+  return n;
+}
+
+app.post('/api/luna/parts', express.json(), async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+
+  const b = req.body || {};
+  const fields = {
+    project_id: optionalNumber(b.projectId, { integer: true }),
+    name: String(b.name || '').trim(),
+    part_number: String(b.partNumber || '').trim(),
+    part_status_id: optionalNumber(b.statusId, { integer: true }),
+    type: b.type,
+    quantity: optionalNumber(b.quantity, { integer: true }),
+    tool_id: optionalNumber(b.toolId, { integer: true }),
+    priority: optionalNumber(b.priority, { integer: true }),
+    parent_part_id: optionalNumber(b.parentPartId, { integer: true }),
+    material: String(b.material || '').trim(),
+    material_thickness_id: optionalNumber(b.thicknessId, { integer: true }),
+    cut_length: optionalNumber(b.cutLength),
+    lead_time_days: optionalNumber(b.leadTimeDays, { integer: true }),
+    description: String(b.description || '').trim(),
+  };
+
+  const problems = [];
+  if (!fields.project_id) problems.push('Choose a project.');
+  if (!fields.name) problems.push('Enter a name.');
+  if (!fields.part_status_id) problems.push('Choose a status.');
+  if (!PART_TYPES.includes(fields.type)) problems.push('Choose a type.');
+  if (fields.quantity === null || Number.isNaN(fields.quantity)) problems.push('Quantity must be a whole number.');
+  for (const key of ['tool_id', 'priority', 'parent_part_id', 'material_thickness_id', 'cut_length', 'lead_time_days']) {
+    if (Number.isNaN(fields[key])) problems.push(`${key.replace(/_/g, ' ')} isn't a valid number.`);
+  }
+  if (problems.length) return res.status(400).json({ error: problems.join(' ') });
+
+  try {
+    if (fields.part_number) {
+      const existing = await lunaGetAll(`parts?project_id=${fields.project_id}`);
+      const duplicate = existing.find((p) => p.project_id === fields.project_id
+        && String(p.part_number).toLowerCase() === fields.part_number.toLowerCase());
+      if (duplicate) {
+        return res.status(409).json({
+          error: `${duplicate.part_number} already exists in this project ("${duplicate.name}"), so nothing was created.`,
+        });
+      }
+    }
+
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== null && value !== '') form.append(key, String(value));
+    }
+
+    const lunaRes = await fetch(`${LUNA_API_BASE}/parts`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.LUNA_PARTS_API_KEY}`,
+        Accept: 'application/json',
+      },
+      body: form,
+    });
+    const body = await lunaRes.json().catch(() => ({}));
+
+    if (lunaRes.status === 422) {
+      const details = Object.values(body.errors || {}).flat().join(' ');
+      return res.status(422).json({ error: details || body.message || 'LUNA Parts rejected the part.' });
+    }
+    if (!lunaRes.ok) {
+      console.error('LUNA Parts create failed:', lunaRes.status, body);
+      const message = lunaRes.status === 403
+        ? 'The API key\'s LUNA Parts user isn\'t allowed to create parts (it needs editor access).'
+        : `LUNA Parts returned an error (${lunaRes.status}).`;
+      return res.status(502).json({ error: message });
+    }
+
+    res.status(201).json({ id: body.id, partNumber: body.part_number, name: body.name });
+  } catch (err) {
+    console.error('LUNA Parts create failed:', err);
+    res.status(502).json({ error: 'Could not reach LUNA Parts.' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Parts Tracker Bridge listening on port ${PORT}`);
 });

@@ -93,6 +93,8 @@
   }
   .btn:disabled { opacity: 0.4; cursor: default; }
   .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
+  .hint.good { color: var(--good); font-weight: 500; }
+  .hint.bad { color: var(--bad); }
 
   .link {
     font: inherit;
@@ -150,9 +152,9 @@
 
     <div class="field">
       <label for="statusSelect">Status<span class="req">*</span></label>
-      <!-- LUNA Parts' API has no way to list statuses yet, so this is fixed
-           until we get the real status IDs from the LUNA Parts team. -->
-      <select id="statusSelect" disabled><option value="">Designed</option></select>
+      <!-- Filled from the statuses existing LUNA parts use (the API has no
+           status list); defaults to "Designed". -->
+      <select id="statusSelect" disabled><option value="">Loading&hellip;</option></select>
     </div>
     <div class="field">
       <label for="typeSelect">Type<span class="req">*</span></label>
@@ -219,7 +221,7 @@
 
   <div class="actions">
     <button id="createBtn" class="btn" type="button" disabled>Create Part</button>
-    <p class="hint">Saving to LUNA Parts is the next step &mdash; this button isn&rsquo;t wired up yet.</p>
+    <p id="createResult" class="hint">Creates the part in LUNA Parts.</p>
   </div>
 
   <details>
@@ -249,6 +251,9 @@
   const projectSelect = el('projectSelect');
   const toolSelect = el('toolSelect');
   const thicknessSelect = el('thicknessSelect');
+  const statusSelect = el('statusSelect');
+  const createBtn = el('createBtn');
+  const createResult = el('createResult');
   const parentSelect = el('parentSelect');
   const drawingSelect = el('drawingSelect');
   const logWindow = el('logWindow');
@@ -304,6 +309,7 @@
       state.connected = true;
       setStatus('Connected to LUNA Parts', 'good');
       log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
+      loadStatuses();
 
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
       const session = await fetch('/api/session', { credentials: 'include' }).then((r) => r.json());
@@ -425,8 +431,87 @@
   function resetPartFields() {
     el('partForm').reset();
     projectSelect.value = state.projectId || '';
+    statusSelect.value = state.defaultStatusId || '';
+    showCreateResult('Creates the part in LUNA Parts.');
     parentSelect.value = '';
     drawingSelect.value = '';
+  }
+
+  // ---- Statuses ------------------------------------------------------------
+  async function loadStatuses() {
+    try {
+      const res = await fetch('/api/luna/statuses', { credentials: 'include' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      fillSelect(statusSelect, body.statuses, 'Select status');
+      const designed = body.statuses.find((s) => /^designed/i.test(s.name));
+      state.defaultStatusId = designed ? String(designed.id) : '';
+      statusSelect.value = state.defaultStatusId;
+      createBtn.disabled = false;
+    } catch (err) {
+      fillSelect(statusSelect, [], 'Unavailable');
+      log(err.message, 'error');
+    }
+  }
+
+  // ---- Create Part ---------------------------------------------------------
+  function showCreateResult(message, kind = '') {
+    createResult.className = `hint ${kind}`;
+    createResult.textContent = message;
+  }
+
+  async function createPart() {
+    const value = (id) => el(id).value.trim();
+    const part = {
+      projectId: projectSelect.value,
+      name: value('nameInput'),
+      partNumber: value('partNumberInput'),
+      statusId: statusSelect.value,
+      type: el('typeSelect').value,
+      quantity: value('quantityInput'),
+      toolId: toolSelect.value,
+      priority: el('prioritySelect').value,
+      parentPartId: parentSelect.value,
+      material: value('materialInput'),
+      thicknessId: thicknessSelect.value,
+      cutLength: value('cutLengthInput'),
+      leadTimeDays: value('leadTimeInput'),
+      description: value('descriptionInput'),
+    };
+
+    const missing = [
+      [!part.projectId, 'Project'],
+      [!part.name, 'Name'],
+      [!part.statusId, 'Status'],
+      [part.quantity === '', 'Quantity'],
+    ].filter(([isMissing]) => isMissing).map(([, label]) => label);
+    if (missing.length) {
+      showCreateResult(`Fill in: ${missing.join(', ')}`, 'bad');
+      return;
+    }
+
+    createBtn.disabled = true;
+    createBtn.textContent = 'Creating\u2026';
+    try {
+      const res = await fetch('/api/luna/parts', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(part),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      showCreateResult(`\u2713 Created ${body.partNumber} in LUNA Parts`, 'good');
+      log(`Created ${body.partNumber} "${body.name}" in LUNA Parts (id ${body.id}).`, 'success');
+    } catch (err) {
+      showCreateResult(err.message, 'bad');
+      log(err.message, 'error');
+    } finally {
+      createBtn.disabled = false;
+      createBtn.textContent = 'Create Part';
+    }
   }
 
   // ---- Drawing picker ------------------------------------------------------
@@ -506,6 +591,7 @@
     loadAssemblies(projectSelect.value);
   });
   el('simulateBtn').addEventListener('click', fillDemoPart);
+  createBtn.addEventListener('click', createPart);
 
   connect();
 })();
