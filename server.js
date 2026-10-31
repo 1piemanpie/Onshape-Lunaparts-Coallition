@@ -202,6 +202,27 @@ app.get('/api/onshape/selected-part', async (req, res) => {
   }
 });
 
+// Drawing tabs in the current document, for the panel's Drawing picker.
+app.get('/api/onshape/drawings', async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  if (!req.session.onshapeTokens || !ctx) {
+    return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  }
+
+  try {
+    const elements = await onshapeFetch(req,
+      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements?elementType=DRAWING`);
+    res.json({
+      drawings: elements
+        .map((e) => ({ id: e.id, name: e.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })),
+    });
+  } catch (err) {
+    console.error('Onshape drawings lookup failed:', err);
+    res.status(502).json({ error: 'Could not list drawings from Onshape.' });
+  }
+});
+
 // ---- LUNA Parts ---------------------------------------------------------
 // The API key lives only in Render's env vars and is only ever sent from
 // this server, so the panel (and anyone viewing it) never sees it.
