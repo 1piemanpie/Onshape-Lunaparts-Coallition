@@ -2,6 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const crypto = require('crypto');
 const path = require('path');
+const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace } = require('./dxf');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -135,12 +136,13 @@ app.get('/api/session', (req, res) => {
 // ---- Onshape REST API ---------------------------------------------------
 const ONSHAPE_API_BASE = process.env.ONSHAPE_API_BASE || 'https://cad.onshape.com/api';
 
-async function onshapeFetch(req, path, options = {}) {
+// { raw: true } returns the file bytes (a Buffer) instead of parsed JSON.
+async function onshapeFetch(req, path, { raw = false, ...options } = {}) {
   const res = await fetch(`${ONSHAPE_API_BASE}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${req.session.onshapeTokens.accessToken}`,
-      Accept: 'application/json',
+      Accept: raw ? 'application/octet-stream' : 'application/json',
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
   });
@@ -149,7 +151,7 @@ async function onshapeFetch(req, path, options = {}) {
     err.status = res.status;
     throw err;
   }
-  return res.json();
+  return raw ? Buffer.from(await res.arrayBuffer()) : res.json();
 }
 
 // Onshape's selection messages give the ID of whatever was clicked: the
@@ -176,13 +178,16 @@ async function fetchPartIndex(req, dwe) {
   ]);
 
   const partsById = new Map(parts.map((p) => [p.partId, p]));
+  const bodiesById = new Map();
   const entityToPart = new Map();
   for (const body of details.bodies || []) {
+    bodiesById.set(body.id, body);
     for (const kind of ['faces', 'edges', 'vertices']) {
       for (const entity of body[kind] || []) entityToPart.set(entity.id, body.id);
     }
   }
-  return { partsById, entityToPart, fetchedAt: Date.now() };
+  // The face/edge geometry is kept too, for making DXFs.
+  return { partsById, bodiesById, entityToPart, fetchedAt: Date.now() };
 }
 
 // Concurrent callers share one in-flight download.
@@ -295,10 +300,16 @@ app.get('/api/onshape/selected-part', async (req, res) => {
       return res.status(404).json({ error: `Couldn't find which part ${selectionId} belongs to.` });
     }
 
+    // A clicked face is what the DXF will be made from, if it's flat.
+    const body = index.bodiesById.get(part.partId);
+    const face = body && (body.faces || []).find((f) => f.id === selectionId);
+
     res.json({
       partId: part.partId,
       name: part.name,
       material: part.material ? part.material.displayName : null,
+      faceId: face ? face.id : null,
+      flatFace: face ? isPlanar(face) : null,
       via,
     });
   } catch (err) {
@@ -581,10 +592,140 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
       return res.status(502).json({ error: message });
     }
 
-    res.status(201).json({ id: body.id, partNumber: body.part_number, name: body.name });
+    const created = body.data || body;
+    res.status(201).json({ id: created.id, partNumber: created.part_number, name: created.name });
   } catch (err) {
     console.error('LUNA Parts create failed:', err);
     res.status(502).json({ error: 'Could not reach LUNA Parts.' });
+  }
+});
+
+// ---- Attachments: the part's DXF and drawing PDF -------------------------
+// After Create Part, the panel sends the Onshape part (and the face that was
+// clicked, and the chosen drawing). We build the DXF from the face, export
+// the drawing to PDF through Onshape's translation service (read-only access
+// is enough; nothing is saved back into the document), and upload both to
+// the LUNA part's attachments. One failing doesn't stop the other.
+const TRANSLATION_TIMEOUT_MS = 60 * 1000;
+
+function safeFileName(text) {
+  return String(text || 'part').replace(/[^\w.\- ]+/g, '_').trim().slice(0, 80) || 'part';
+}
+
+async function buildDxf(req, dwe, partId, faceId) {
+  let index = await getPartIndex(req, dwe);
+  if (!index.bodiesById.has(partId)) index = await getPartIndex(req, dwe, { refresh: true });
+  const body = index.bodiesById.get(partId);
+  if (!body) throw new Error('Couldn\'t find the part in Onshape to make its DXF.');
+
+  // Splines and other curves need their tessellated points from Onshape.
+  const { face } = pickFace(body, faceId);
+  const edgePoints = new Map();
+  const extra = face ? edgesNeedingPoints(body, face) : [];
+  if (extra.length) {
+    const query = new URLSearchParams({ partId });
+    for (const id of extra) query.append('edgeId', id);
+    const tess = await onshapeFetch(req, `/partstudios/${dwe}/tessellatededges?${query}`);
+    for (const b of tess.bodies || []) {
+      for (const e of b.edges || []) edgePoints.set(e.id, e.vertices || []);
+    }
+  }
+  return faceToDxf(body, faceId, edgePoints);
+}
+
+async function exportDrawingPdf(req, ctx, drawingId, name) {
+  const started = await onshapeFetch(req,
+    `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingId}/translations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        formatName: 'PDF',
+        storeInDocument: false,
+        currentSheetOnly: false,
+        destinationName: name,
+      }),
+    });
+
+  const deadline = Date.now() + TRANSLATION_TIMEOUT_MS;
+  let info = started;
+  while (info.requestState === 'ACTIVE') {
+    if (Date.now() > deadline) throw new Error('Onshape took too long to export the drawing PDF.');
+    await new Promise((r) => setTimeout(r, 1000));
+    info = await onshapeFetch(req, `/translations/${started.id}`);
+  }
+  if (info.requestState !== 'DONE' || !(info.resultExternalDataIds || []).length) {
+    throw new Error(`Onshape couldn't export the drawing PDF${info.failureReason ? `: ${info.failureReason}` : '.'}`);
+  }
+  return onshapeFetch(req, `/documents/d/${ctx.documentId}/externaldata/${info.resultExternalDataIds[0]}`, { raw: true });
+}
+
+app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+
+  const lunaPartId = optionalNumber(req.params.id, { integer: true });
+  const b = req.body || {};
+  const partId = String(b.partId || '');
+  const faceId = b.faceId ? String(b.faceId) : null;
+  const drawingId = b.drawingId ? String(b.drawingId) : null;
+  const fileBase = safeFileName(b.partNumber);
+  if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
+  if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
+    return res.status(400).json({ error: 'Click the part in Onshape first.' });
+  }
+  if (drawingId && !ONSHAPE_ID.test(drawingId)) return res.status(400).json({ error: 'Invalid drawing.' });
+
+  const files = [];
+  const notes = [];
+
+  const [dxf, pdf] = await Promise.allSettled([
+    buildDxf(req, dwe, partId, faceId),
+    drawingId ? exportDrawingPdf(req, ctx, drawingId, `${fileBase} drawing`) : Promise.resolve(null),
+  ]);
+
+  if (dxf.status === 'fulfilled') {
+    files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf });
+    if (faceId && !dxf.value.usedClicked) notes.push('The clicked face isn\'t flat, so the DXF uses the part\'s largest flat face.');
+  } else {
+    console.error('DXF build failed:', dxf.reason);
+    notes.push(dxf.reason.status ? 'Couldn\'t read the part from Onshape for the DXF.' : dxf.reason.message);
+  }
+  if (!drawingId) {
+    notes.push('No drawing was chosen, so no PDF was attached.');
+  } else if (pdf.status === 'fulfilled') {
+    files.push({ name: `${fileBase} drawing.pdf`, type: 'application/pdf', data: pdf.value });
+  } else {
+    console.error('Drawing PDF export failed:', pdf.reason);
+    notes.push(pdf.reason.status ? `Couldn't export the drawing PDF (Onshape ${pdf.reason.status}).` : pdf.reason.message);
+  }
+
+  if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes });
+
+  try {
+    const form = new FormData();
+    for (const f of files) form.append('files[]', new Blob([f.data], { type: f.type }), f.name);
+
+    const lunaRes = await fetch(`${LUNA_API_BASE}/parts/${lunaPartId}/attachments`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.LUNA_PARTS_API_KEY}`,
+        Accept: 'application/json',
+      },
+      body: form,
+    });
+    if (!lunaRes.ok) {
+      const body = await lunaRes.json().catch(() => ({}));
+      console.error('LUNA Parts attachment upload failed:', lunaRes.status, body);
+      const details = lunaRes.status === 422 ? Object.values(body.errors || {}).flat().join(' ') : '';
+      return res.status(502).json({
+        error: details || `LUNA Parts didn't accept the files (${lunaRes.status}).`,
+        notes,
+      });
+    }
+    res.json({ attached: files.map((f) => f.name), notes });
+  } catch (err) {
+    console.error('LUNA Parts attachment upload failed:', err);
+    res.status(502).json({ error: 'Could not reach LUNA Parts to upload the files.', notes });
   }
 });
 

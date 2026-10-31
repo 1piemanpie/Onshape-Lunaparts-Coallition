@@ -95,6 +95,7 @@
   .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
   .hint.good { color: var(--good); font-weight: 500; }
   .hint.bad { color: var(--bad); }
+  .hint.left { text-align: left; margin-top: 3px; }
 
   .link {
     font: inherit;
@@ -209,8 +210,10 @@
     <div class="field full">
       <label for="drawingSelect">Drawing</label>
       <!-- Picked automatically when a part is clicked (e.g. part E05 ->
-           "E05 Drawing 1"); exported to PDF and attached in a later step. -->
+           "E05 Drawing 1"); exported to PDF and attached on Create Part,
+           along with a DXF of the clicked face. -->
       <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
+      <p id="attachHint" class="hint left">Click a part to attach its DXF and drawing.</p>
     </div>
 
     <div class="field full">
@@ -256,6 +259,7 @@
   const createResult = el('createResult');
   const parentSelect = el('parentSelect');
   const drawingSelect = el('drawingSelect');
+  const attachHint = el('attachHint');
   const logWindow = el('logWindow');
 
   function log(message, kind) {
@@ -411,14 +415,25 @@
 
       // Another face of the same part keeps whatever was typed; a different
       // part starts from a clean form so e.g. quantity doesn't carry over.
-      if (body.partId !== state.partId) resetPartFields();
+      if (body.partId !== state.partId) {
+        resetPartFields();
+        state.faceId = null;
+        state.flatFace = null;
+      }
       state.partId = body.partId;
+      state.partName = body.name;
+      // An edge or vertex click keeps the face picked earlier for the DXF.
+      if (body.faceId) {
+        state.faceId = body.faceId;
+        state.flatFace = body.flatFace;
+      }
 
       // The Onshape part name is the team's part number (e.g. "E05"). The
       // LUNA "Name" is a separate description the user types.
       el('partNumberInput').value = body.name;
       el('materialInput').value = body.material || '';
       pickDrawingFor(body.name);
+      updateAttachHint();
       log(`Part loaded: ${body.name} (via ${body.via})`, 'success');
     } catch (err) {
       if (lookup === lookupCounter) log(err.message, 'error');
@@ -505,12 +520,63 @@
 
       showCreateResult(`\u2713 Created ${body.partNumber} in LUNA Parts`, 'good');
       log(`Created ${body.partNumber} "${body.name}" in LUNA Parts (id ${body.id}).`, 'success');
+      if (state.partId && body.id) await attachFiles(body);
     } catch (err) {
       showCreateResult(err.message, 'bad');
       log(err.message, 'error');
     } finally {
       createBtn.disabled = false;
       createBtn.textContent = 'Create Part';
+    }
+  }
+
+  // ---- Attachments (DXF of the clicked face + drawing PDF) ------------------
+  async function attachFiles(created) {
+    createBtn.textContent = 'Attaching files\u2026';
+    showCreateResult(`\u2713 Created ${created.partNumber}. Attaching DXF${drawingSelect.value ? ' and drawing PDF' : ''}\u2026`, 'good');
+    try {
+      const res = await fetch(`/api/luna/parts/${encodeURIComponent(created.id)}/attachments`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          partId: state.partId,
+          faceId: state.faceId,
+          drawingId: drawingSelect.value,
+          partNumber: created.partNumber || state.partName,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      for (const note of body.notes || []) log(note, 'error');
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      const notes = (body.notes || []).length ? ` (${body.notes.join(' ')})` : '';
+      showCreateResult(`\u2713 Created ${created.partNumber} with ${body.attached.join(' + ')}${notes}`, 'good');
+      log(`Attached ${body.attached.join(', ')} to ${created.partNumber}.`, 'success');
+    } catch (err) {
+      showCreateResult(`Created ${created.partNumber}, but the files weren't attached: ${err.message}`, 'bad');
+      log(err.message, 'error');
+    }
+  }
+
+  // Says up front what Create Part will attach, so a missing drawing is
+  // obvious before the part is made.
+  function updateAttachHint() {
+    if (!state.partId) {
+      attachHint.className = 'hint left';
+      attachHint.textContent = 'Click a part to attach its DXF and drawing.';
+      return;
+    }
+    const dxf = state.faceId
+      ? (state.flatFace ? 'DXF of the clicked face' : 'DXF of the largest flat face (clicked face isn\u2019t flat)')
+      : 'DXF of the largest flat face';
+    if (drawingSelect.value) {
+      attachHint.className = 'hint left';
+      attachHint.textContent = `Will attach: ${dxf} + drawing PDF.`;
+    } else {
+      attachHint.className = 'hint left bad';
+      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(state.partName));
+      attachHint.textContent = `\u26a0 ${matched ? 'No drawing chosen' : `No drawing found for ${state.partName}`}. Only the ${dxf} will be attached.`;
     }
   }
 
@@ -592,6 +658,7 @@
   });
   el('simulateBtn').addEventListener('click', fillDemoPart);
   createBtn.addEventListener('click', createPart);
+  drawingSelect.addEventListener('change', updateAttachHint);
 
   connect();
 })();
