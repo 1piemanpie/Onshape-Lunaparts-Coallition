@@ -132,6 +132,76 @@ app.get('/api/session', (req, res) => {
   });
 });
 
+// ---- Onshape REST API ---------------------------------------------------
+const ONSHAPE_API_BASE = process.env.ONSHAPE_API_BASE || 'https://cad.onshape.com/api';
+
+async function onshapeFetch(req, path, options = {}) {
+  const res = await fetch(`${ONSHAPE_API_BASE}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${req.session.onshapeTokens.accessToken}`,
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  });
+  if (!res.ok) {
+    const err = new Error(`Onshape ${path} returned ${res.status}: ${await res.text()}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+// Onshape's selection messages give the ID of whatever was clicked (a
+// face, edge, vertex, or the part itself). This asks the Part Studio which
+// part owns that entity, then returns that part's name and material.
+const OWNER_BODY_SCRIPT = `function(context is Context, queries) {
+  return transientQueriesToStrings(evaluateQuery(context, qOwnerBody(queries.id)));
+}`;
+
+app.get('/api/onshape/selected-part', async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  if (!req.session.onshapeTokens || !ctx) {
+    return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  }
+  const selectionId = String(req.query.selectionId || '');
+  if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(selectionId)) {
+    return res.status(400).json({ error: 'Invalid selection.' });
+  }
+
+  const dwe = `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
+
+  try {
+    const evaluated = await onshapeFetch(req, `/partstudios/${dwe}/featurescript`, {
+      method: 'POST',
+      body: JSON.stringify({
+        script: OWNER_BODY_SCRIPT,
+        queries: [{ key: 'id', value: [selectionId] }],
+      }),
+    });
+    const ownerIds = (evaluated.result && evaluated.result.value || []).map((v) => v.value);
+
+    const parts = await onshapeFetch(req, `/parts/${dwe}`);
+    // If the click was on the part itself, its own ID is the part ID.
+    const part = parts.find((p) => ownerIds.includes(p.partId) || p.partId === selectionId);
+    if (!part) {
+      return res.status(404).json({ error: 'That selection isn\'t on a part in this Part Studio.' });
+    }
+
+    res.json({
+      partId: part.partId,
+      name: part.name,
+      material: part.material ? part.material.displayName : null,
+    });
+  } catch (err) {
+    console.error('Onshape selection lookup failed:', err);
+    const message = err.status === 401
+      ? 'Your Onshape login expired. Close and reopen the panel.'
+      : 'Could not read that part from Onshape.';
+    res.status(502).json({ error: message });
+  }
+});
+
 // ---- LUNA Parts ---------------------------------------------------------
 // The API key lives only in Render's env vars and is only ever sent from
 // this server, so the panel (and anyone viewing it) never sees it.

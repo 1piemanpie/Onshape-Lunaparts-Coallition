@@ -35,7 +35,7 @@
     font-size: 13px;
   }
 
-  .panel { max-width: 340px; margin: 0 auto; padding: 12px; }
+  .panel { padding: 12px; }
 
   .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .head h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
@@ -303,6 +303,7 @@
       log(session.context
         ? `Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
         : 'Not opened from Onshape (no document info).');
+      if (session.context) listenForSelections(session.context);
     } catch (err) {
       setStatus('Could not reach LUNA Parts', 'bad');
       for (const s of [projectSelect, toolSelect, thicknessSelect]) {
@@ -326,6 +327,51 @@
       parentSelect.disabled = false;
     } catch (err) {
       log(err.message, 'error');
+    }
+  }
+
+  // ---- Real Onshape selections ------------------------------------------
+  // Onshape tells an embedded panel what the user clicked via postMessage,
+  // but only after the panel introduces itself with 'applicationInit'.
+  // A click on a face/edge/vertex in the 3D view arrives as that entity's
+  // ID; the server works out which part owns it.
+  const ONSHAPE_ORIGIN = 'https://cad.onshape.com';
+  let lookupCounter = 0;
+
+  function listenForSelections(context) {
+    window.addEventListener('message', (event) => {
+      if (event.origin !== ONSHAPE_ORIGIN || !event.data) return;
+      if (event.data.messageName !== 'SELECTION') return;
+
+      const picked = (event.data.selections || []).find((s) => s.selectionId);
+      if (picked) loadSelectedPart(picked);
+    });
+
+    window.parent.postMessage({
+      documentId: context.documentId,
+      workspaceId: context.workspaceId,
+      elementId: context.elementId,
+      messageName: 'applicationInit',
+    }, ONSHAPE_ORIGIN);
+    log('Listening for part selections in Onshape.');
+  }
+
+  async function loadSelectedPart(selection) {
+    // Clicks can arrive faster than lookups finish; only the latest one wins.
+    const lookup = ++lookupCounter;
+    log(`Selected ${(selection.entityType || 'entity').toLowerCase()} ${selection.selectionId}&hellip;`);
+
+    try {
+      const res = await fetch(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selection.selectionId)}`, { credentials: 'include' });
+      const body = await res.json();
+      if (lookup !== lookupCounter) return;
+      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+
+      el('nameInput').value = body.name;
+      el('materialInput').value = body.material || '';
+      log(`Part loaded: ${body.name}`, 'success');
+    } catch (err) {
+      if (lookup === lookupCounter) log(err.message, 'error');
     }
   }
 
