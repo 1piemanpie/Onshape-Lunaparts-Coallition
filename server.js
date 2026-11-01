@@ -171,10 +171,30 @@ const OWNER_BODY_SCRIPT = `function(context is Context, queries) {
 const PART_INDEX_MAX_AGE_MS = 30 * 1000;
 const partIndexes = new Map();
 
-async function fetchPartIndex(req, dwe) {
+// A "source" is the Part Studio a part lives in. In a Part Studio that's
+// just the open tab. In an assembly each part points back at its own Part
+// Studio, maybe in another document (FRC Design App imports), at a version,
+// and with a configuration (e.g. a shaft's length).
+function asSource(src) {
+  return typeof src === 'string' ? { dwe: src, configuration: '', linkDocumentId: '' } : src;
+}
+
+function sourceQuery(src, query = new URLSearchParams()) {
+  if (src.configuration) query.set('configuration', src.configuration);
+  if (src.linkDocumentId) query.set('linkDocumentId', src.linkDocumentId);
+  const text = query.toString();
+  return text ? `?${text}` : '';
+}
+
+function sourceKey(req, src) {
+  return `${req.sessionID}:${src.dwe}|${src.configuration || ''}`;
+}
+
+async function fetchPartIndex(req, source) {
+  const src = asSource(source);
   const [parts, details] = await Promise.all([
-    onshapeFetch(req, `/parts/${dwe}`),
-    onshapeFetch(req, `/partstudios/${dwe}/bodydetails`),
+    onshapeFetch(req, `/parts/${src.dwe}${sourceQuery(src)}`),
+    onshapeFetch(req, `/partstudios/${src.dwe}/bodydetails${sourceQuery(src)}`),
   ]);
 
   const partsById = new Map(parts.map((p) => [p.partId, p]));
@@ -191,13 +211,13 @@ async function fetchPartIndex(req, dwe) {
 }
 
 // Concurrent callers share one in-flight download.
-function getPartIndex(req, dwe, { refresh = false } = {}) {
-  const key = `${req.sessionID}:${dwe}`;
+function getPartIndex(req, source, { refresh = false } = {}) {
+  const key = sourceKey(req, asSource(source));
   const cached = partIndexes.get(key);
   if (cached && !refresh) return cached;
 
   if (partIndexes.size > 100) partIndexes.clear();
-  const loading = fetchPartIndex(req, dwe);
+  const loading = fetchPartIndex(req, source);
   partIndexes.set(key, loading);
   loading.catch(() => partIndexes.delete(key));
   return loading;
@@ -206,7 +226,7 @@ function getPartIndex(req, dwe, { refresh = false } = {}) {
 const backgroundRefreshes = new Set();
 
 function refreshPartIndexInBackground(req, dwe) {
-  const key = `${req.sessionID}:${dwe}`;
+  const key = sourceKey(req, asSource(dwe));
   if (backgroundRefreshes.has(key)) return;
   backgroundRefreshes.add(key);
   fetchPartIndex(req, dwe)
@@ -244,12 +264,155 @@ function currentDwe(req) {
   return `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
 }
 
+// Is the panel open in a Part Studio or an assembly? Asked once per session.
+async function elementType(req) {
+  const ctx = req.session.onshapeContext;
+  if (!ctx.elementType) {
+    const elements = await onshapeFetch(req,
+      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements?elementId=${ctx.elementId}`);
+    ctx.elementType = (elements[0] && elements[0].elementType) || 'PARTSTUDIO';
+  }
+  return ctx.elementType;
+}
+
+// ---- Assemblies ---------------------------------------------------------
+// The panel lists every part in the assembly (and its sub-assemblies),
+// counted, with the team's own parts first and hardware tucked away.
+const TEAM_PART_NAME = /^(\d{2}[a-z]{1,3}-[a-z]{1,4}\d{1,4}|\d{2}-[a-z]{1,4}-\d{1,4}|[a-z]{1,3}-?\d{1,4})\b/i; // 26O-E001, E05
+const STOCK_NAME = /hex|shaft|spacer|thunder ?hex/i;
+const HARDWARE_NAME = new RegExp([
+  'bolt', 'screw', 'nut', 'nylock', 'washer', 'bearing', 'gear', 'pulley', 'belt', 'sprocket', 'chain',
+  'motor', 'bushing', 'shcs', 'bhcs', 'fhcs', 'rivet', 'standoff', 'collar', 'insert', 'spring',
+  'zip ?tie', 'encoder', 'falcon', 'kraken', 'neo', 'vortex', 'cim', 'servo', 'gearbox', 'wheel',
+].map((w) => `\\b${w}s?\\b`).join('|') + '|#\\d+-\\d+|\\d/\\d+-\\d+', 'i');
+
+function partGroup(name, standardContent) {
+  if (HARDWARE_NAME.test(name)) return 'hardware';
+  if (TEAM_PART_NAME.test(name)) return 'team';
+  if (STOCK_NAME.test(name)) return 'stock';
+  return standardContent ? 'hardware' : 'other';
+}
+
+const GROUP_ORDER = { team: 0, stock: 1, other: 2, hardware: 3 };
+
+function instanceSource(ctx, inst) {
+  let wvm;
+  if (inst.documentVersion) wvm = `v/${inst.documentVersion}`;
+  else if (inst.documentId === ctx.documentId) wvm = `w/${ctx.workspaceId}`;
+  else wvm = `m/${inst.documentMicroversion}`;
+  return {
+    dwe: `d/${inst.documentId}/${wvm}/e/${inst.elementId}`,
+    configuration: inst.configuration || '',
+    linkDocumentId: inst.documentId === ctx.documentId ? '' : ctx.documentId,
+  };
+}
+
+const assemblyLists = new Map();
+
+async function fetchAssemblyParts(req) {
+  const ctx = req.session.onshapeContext;
+  const def = await onshapeFetch(req,
+    `/assemblies/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}?includeMateFeatures=false`);
+
+  const subKey = (a) => `${a.documentId}|${a.elementId}|${a.configuration || ''}`;
+  const subs = new Map((def.subAssemblies || []).map((a) => [subKey(a), a]));
+  const partKey = (p) => [p.documentId, p.elementId, p.partId, p.configuration || '',
+    p.documentVersion || p.documentMicroversion || ''].join('|');
+  const standard = new Set((def.parts || []).filter((p) => p.standardContent).map(partKey));
+
+  const byKey = new Map();
+  const visit = (instances, depth) => {
+    if (depth > 20) return;
+    for (const inst of instances || []) {
+      if (inst.suppressed) continue;
+      if (inst.type === 'Assembly') {
+        const sub = subs.get(subKey(inst));
+        if (sub) visit(sub.instances, depth + 1);
+        continue;
+      }
+      if (inst.type !== 'Part' || ![inst.documentId, inst.elementId].every((id) => ONSHAPE_ID.test(id || ''))) continue;
+      if (!ONSHAPE_ID.test(inst.documentVersion || inst.documentMicroversion || '')) continue;
+      const key = partKey(inst);
+      const known = byKey.get(key);
+      if (known) { known.quantity += 1; continue; }
+      const name = String(inst.name || 'Part').replace(/\s*<\d+>$/, '');
+      const standardContent = Boolean(inst.isStandardContent || standard.has(key));
+      byKey.set(key, {
+        id: `a${crypto.createHash('sha1').update(key).digest('hex').slice(0, 12)}`,
+        name,
+        quantity: 1,
+        group: partGroup(name, standardContent),
+        partId: inst.partId,
+        source: instanceSource(ctx, inst),
+      });
+    }
+  };
+  visit(def.rootAssembly && def.rootAssembly.instances, 0);
+  const parts = [...byKey.values()];
+
+  // Materials come from each part's own Part Studio. Hardware is skipped:
+  // there can be hundreds of fasteners and nobody needs their material here.
+  const sources = new Map();
+  for (const p of parts) {
+    if (p.group === 'hardware') continue;
+    const key = sourceKey(req, p.source);
+    if (!sources.has(key)) sources.set(key, { source: p.source, parts: [] });
+    sources.get(key).parts.push(p);
+  }
+  const jobs = [...sources.values()];
+  const worker = async () => {
+    for (let job = jobs.shift(); job; job = jobs.shift()) {
+      try {
+        const list = await onshapeFetch(req, `/parts/${job.source.dwe}${sourceQuery(job.source)}`);
+        const byId = new Map(list.map((x) => [x.partId, x]));
+        for (const p of job.parts) {
+          const info = byId.get(p.partId);
+          p.material = info && info.material ? info.material.displayName : null;
+        }
+      } catch (err) {
+        console.error('Onshape material lookup failed:', err.message);
+      }
+    }
+  };
+  await Promise.all([1, 2, 3, 4].map(worker));
+
+  parts.sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]
+    || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return { parts, byId: new Map(parts.map((p) => [p.id, p])) };
+}
+
+function getAssemblyParts(req, { refresh = false } = {}) {
+  const key = `${req.sessionID}:${currentDwe(req)}`;
+  const cached = assemblyLists.get(key);
+  if (cached && !refresh) return cached;
+  if (assemblyLists.size > 100) assemblyLists.clear();
+  const loading = fetchAssemblyParts(req);
+  assemblyLists.set(key, loading);
+  loading.catch(() => assemblyLists.delete(key));
+  return loading;
+}
+
+// Turns the panel's part ID into the Part Studio and part it came from.
+async function resolvePart(req, partId) {
+  const dwe = currentDwe(req);
+  if (await elementType(req) !== 'ASSEMBLY') return { source: asSource(dwe), partId };
+  let list = await getAssemblyParts(req);
+  if (!list.byId.has(partId)) list = await getAssemblyParts(req, { refresh: true });
+  const part = list.byId.get(partId);
+  if (!part) throw new Error('Couldn\'t find the part in the assembly any more. Refresh the parts list.');
+  return { source: part.source, partId: part.partId };
+}
+
 // Called when the panel opens so the first click is already fast.
 app.post('/api/onshape/warm', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
 
   try {
+    if (await elementType(req) === 'ASSEMBLY') {
+      const list = await getAssemblyParts(req);
+      return res.json({ parts: list.parts.length, kind: 'assembly' });
+    }
     const index = await getPartIndex(req, dwe);
     res.json({ parts: index.partsById.size });
   } catch (err) {
@@ -263,16 +426,28 @@ app.get('/api/onshape/parts', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
 
+  const refresh = req.query.refresh === '1';
   try {
-    const index = await getPartIndex(req, dwe, { refresh: req.query.refresh === '1' });
+    if (await elementType(req) === 'ASSEMBLY') {
+      const list = await getAssemblyParts(req, { refresh });
+      return res.json({
+        kind: 'assembly',
+        parts: list.parts.map((p) => ({
+          partId: p.id, name: p.name, material: p.material || null, quantity: p.quantity, group: p.group,
+        })),
+      });
+    }
+    const index = await getPartIndex(req, dwe, { refresh });
     const parts = [...index.partsById.values()]
       .map((p) => ({
         partId: p.partId,
         name: p.name,
         material: p.material ? p.material.displayName : null,
+        quantity: 1,
+        group: partGroup(p.name, false),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    res.json({ parts });
+    res.json({ kind: 'partstudio', parts });
   } catch (err) {
     console.error('Onshape parts list failed:', err);
     res.status(502).json({ error: onshapeErrorMessage(err) });
@@ -292,6 +467,11 @@ app.get('/api/onshape/selected-part', async (req, res) => {
   }
 
   try {
+    // Clicks in an assembly name occurrences, not Part Studio faces; the
+    // panel ticks assembly parts from its list instead.
+    if (await elementType(req) === 'ASSEMBLY') {
+      return res.status(409).json({ error: 'Pick parts from the list in assemblies.' });
+    }
     let index = await getPartIndex(req, dwe);
     let partId = partIdFor(index, selectionId);
     let via = 'cache';
@@ -633,9 +813,9 @@ function safeFileName(text) {
   return String(text || 'part').replace(/[^\w.\- ]+/g, '_').trim().slice(0, 80) || 'part';
 }
 
-async function buildDxf(req, dwe, partId, faceId) {
-  let index = await getPartIndex(req, dwe);
-  if (!index.bodiesById.has(partId)) index = await getPartIndex(req, dwe, { refresh: true });
+async function buildDxf(req, source, partId, faceId) {
+  let index = await getPartIndex(req, source);
+  if (!index.bodiesById.has(partId)) index = await getPartIndex(req, source, { refresh: true });
   const body = index.bodiesById.get(partId);
   if (!body) throw new Error('Couldn\'t find the part in Onshape to make its DXF.');
 
@@ -646,7 +826,7 @@ async function buildDxf(req, dwe, partId, faceId) {
   if (extra.length) {
     const query = new URLSearchParams({ partId });
     for (const id of extra) query.append('edgeId', id);
-    const tess = await onshapeFetch(req, `/partstudios/${dwe}/tessellatededges?${query}`);
+    const tess = await onshapeFetch(req, `/partstudios/${source.dwe}/tessellatededges${sourceQuery(source, query)}`);
     for (const b of tess.bodies || []) {
       for (const e of b.edges || []) edgePoints.set(e.id, e.vertices || []);
     }
@@ -689,6 +869,8 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   const partId = String(b.partId || '');
   const faceId = b.faceId ? String(b.faceId) : null;
   const drawingId = b.drawingId ? String(b.drawingId) : null;
+  // DXFs are only for parts cut on the CNC; the panel decides from the Machine.
+  const wantDxf = b.wantDxf !== false;
   const fileBase = safeFileName(b.partNumber);
   if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
   if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
@@ -699,12 +881,22 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   const files = [];
   const notes = [];
 
+  let resolved;
+  try {
+    resolved = await resolvePart(req, partId);
+  } catch (err) {
+    console.error('Part lookup for attachments failed:', err);
+    return res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
+  }
+
   const [dxf, pdf] = await Promise.allSettled([
-    buildDxf(req, dwe, partId, faceId),
+    wantDxf ? buildDxf(req, resolved.source, resolved.partId, faceId) : Promise.resolve(null),
     drawingId ? exportDrawingPdf(req, ctx, drawingId, `${fileBase} drawing`) : Promise.resolve(null),
   ]);
 
-  if (dxf.status === 'fulfilled') {
+  if (!wantDxf) {
+    // Not a CNC part: no DXF wanted, so nothing to report.
+  } else if (dxf.status === 'fulfilled') {
     files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf });
     if (faceId && !dxf.value.usedClicked) notes.push('The clicked face isn\'t flat, so the DXF uses the part\'s largest flat face.');
   } else {

@@ -200,6 +200,14 @@
     color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
   }
   .tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .qty { font-weight: 700; color: var(--text); }
+  /* Assembly hardware sits under a fold at the bottom of the list. */
+  .hw-fold { border-top: 1px solid var(--line); }
+  .hw-fold summary {
+    padding: 7px 10px; cursor: pointer; font-family: var(--heading); font-weight: 700;
+    font-size: 12px; letter-spacing: 0.08em; color: var(--muted); background: #fafafa;
+  }
+  .hw-fold[open] summary { border-bottom: 1px solid var(--line); }
 
   /* ---- One part at a time ---- */
   .card-head { display: flex; align-items: center; justify-content: space-between; }
@@ -302,7 +310,7 @@
     </div>
 
     <div class="list-head">
-      <label>Parts in this Part Studio</label>
+      <label id="listLabel">Parts in this Part Studio</label>
       <span class="list-tools">
         <button id="refreshBtn" class="mini" type="button" title="Reload parts from Onshape">&#8635;</button>
         <button id="allBtn" class="mini" type="button">ALL</button>
@@ -446,7 +454,8 @@
   const state = {
     context: null,
     drawings: [],
-    parts: [],             // [{ partId, name, material }] from Onshape
+    parts: [],             // [{ partId, name, material, quantity, group }] from Onshape
+    kind: 'partstudio',    // or 'assembly'
     checked: new Set(),    // partIds ticked on the list
     faces: new Map(),      // partId -> { faceId, flatFace } from Use Selection
     queue: [],             // partIds being stepped through
@@ -648,11 +657,13 @@
     try {
       const body = await getJson(`/api/onshape/parts${refresh ? '?refresh=1' : ''}`);
       state.parts = body.parts;
+      state.kind = body.kind || 'partstudio';
+      el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
       renderPartList();
-      log(`${body.parts.length} parts loaded from this Part Studio in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+      log(`${body.parts.length} parts loaded from this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'} in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
     } catch (err) {
       el('partList').innerHTML = '<p class="chip-empty">Couldn’t load parts.</p>';
       log(err.message, 'error');
@@ -663,7 +674,18 @@
     const list = el('partList');
     list.innerHTML = '';
     if (!state.parts.length) {
-      list.innerHTML = '<p class="chip-empty">No parts in this Part Studio.</p>';
+      list.innerHTML = `<p class="chip-empty">No parts in this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'}.</p>`;
+    }
+    // Bolts, bearings and other bought parts go under a closed fold.
+    const hardware = state.parts.filter((p) => p.group === 'hardware');
+    let fold = null;
+    if (hardware.length) {
+      fold = document.createElement('details');
+      fold.className = 'hw-fold';
+      fold.open = hardware.some((p) => state.checked.has(p.partId));
+      const summary = document.createElement('summary');
+      summary.textContent = `HARDWARE (${hardware.length})`;
+      fold.appendChild(summary);
     }
     for (const part of state.parts) {
       const row = document.createElement('label');
@@ -688,6 +710,13 @@
       const sub = document.createElement('span');
       sub.className = 'part-sub';
       sub.textContent = part.material || 'No material';
+      if (part.quantity > 1) {
+        const qty = document.createElement('span');
+        qty.className = 'qty';
+        qty.textContent = `\u00a0\u00b7\u00a0\u00d7${part.quantity}`;
+        qty.title = `${part.quantity} copies in the assembly`;
+        sub.appendChild(qty);
+      }
       text.append(name, sub);
 
       const tag = document.createElement('span');
@@ -696,8 +725,9 @@
       tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected' : '';
 
       row.append(box, text, tag);
-      list.appendChild(row);
+      (part.group === 'hardware' ? fold : list).appendChild(row);
     }
+    if (fold) list.appendChild(fold);
     updateListFooter();
   }
 
@@ -744,6 +774,8 @@
 
   async function lookUpSelection(selection) {
     // Clicks can arrive faster than lookups finish; only the latest one wins.
+    // Assembly clicks aren't Part Studio faces; parts are ticked from the list.
+    if (state.kind === 'assembly') return;
     const lookup = ++lookupCounter;
     log(`Selected ${(selection.entityType || 'entity').toLowerCase()} ${selection.selectionId}&hellip;`);
     try {
@@ -819,6 +851,8 @@
     // LUNA "Name" is a separate description the user types.
     el('partNumberInput').value = part.name;
     el('materialInput').value = part.material || '';
+    // In an assembly, each copy of a part counts towards the quantity.
+    el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(part.name);
     updateAttachHint();
     el('nameInput').focus();
@@ -922,6 +956,7 @@
       onshapePart,
       faceId: face.faceId || null,
       drawingId: drawingSelect.value,
+      wantDxf: wantsDxf(onshapePart),
       result,
     });
     log(`Queued ${result.name} for upload.`);
@@ -970,12 +1005,18 @@
       result.name = created.partNumber || result.name;
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      result.detail = `Attaching DXF${job.drawingId ? ' and drawing PDF' : ''}…`;
-      renderUploadProgress();
-      const files = await attachFiles(created, job);
-      result.outcome = 'created';
-      result.detail = files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`;
-      result.kind = files.ok ? 'good' : 'bad';
+      if (!job.wantDxf && !job.drawingId) {
+        result.outcome = 'created';
+        result.detail = 'Created (no DXF or drawing to attach)';
+        result.kind = 'good';
+      } else {
+        result.detail = `Attaching ${[job.wantDxf && 'DXF', job.drawingId && 'drawing PDF'].filter(Boolean).join(' and ')}…`;
+        renderUploadProgress();
+        const files = await attachFiles(created, job);
+        result.outcome = 'created';
+        result.detail = files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`;
+        result.kind = files.ok ? 'good' : 'bad';
+      }
     } catch (err) {
       // Nothing was created, so the part goes back on the checklist to retry.
       result.outcome = 'failed';
@@ -999,6 +1040,7 @@
           partId: job.onshapePart.partId,
           faceId: job.faceId,
           drawingId: job.drawingId,
+          wantDxf: job.wantDxf,
           partNumber: created.partNumber || job.onshapePart.name,
         }),
       });
@@ -1031,22 +1073,36 @@
     if (state.screen === 'done') renderDone();
   }
 
+  // DXFs are only for parts cut on the CNC. With no machine picked, a
+  // Part Studio part still gets one (as before), but shafts and spacers don't.
+  function wantsDxf(part) {
+    const option = toolSelect.selectedOptions[0];
+    const machine = toolSelect.value && option ? option.textContent : '';
+    if (machine) return /cnc|mill|router/i.test(machine) && !/lathe/i.test(machine);
+    return Boolean(part) && part.group !== 'stock' && part.group !== 'hardware';
+  }
+
   // Says up front what Upload will attach, so a missing drawing is obvious
   // before the part is made.
   function updateAttachHint() {
     const part = currentPart();
     if (!part) return;
     const face = state.faces.get(part.partId);
-    const dxf = face
-      ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
-      : 'DXF of the largest flat face';
+    const dxf = !wantsDxf(part) ? ''
+      : face
+        ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
+        : 'DXF of the largest flat face';
+    const noDxf = toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
     if (drawingSelect.value) {
       attachHint.className = 'hint left';
-      attachHint.textContent = `Will attach: ${dxf} + drawing PDF.`;
+      attachHint.textContent = dxf ? `Will attach: ${dxf} + drawing PDF.` : `Will attach: drawing PDF. ${noDxf}.`;
     } else {
       attachHint.className = 'hint left bad';
       const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(part.name));
-      attachHint.textContent = `⚠ ${matched ? 'No drawing chosen' : `No drawing found for ${part.name}`}. Only the ${dxf} will be attached.`;
+      const missing = matched ? 'No drawing chosen' : `No drawing found for ${part.name}`;
+      attachHint.textContent = dxf
+        ? `⚠ ${missing}. Only the ${dxf} will be attached.`
+        : `⚠ ${missing}, and ${noDxf.charAt(0).toLowerCase()}${noDxf.slice(1)}. Nothing will be attached.`;
     }
   }
 
@@ -1155,7 +1211,8 @@
   el('useSelBtn').addEventListener('click', useSelection);
   el('refreshBtn').addEventListener('click', () => loadParts(true));
   el('allBtn').addEventListener('click', () => {
-    for (const p of state.parts) state.checked.add(p.partId);
+    // ALL leaves the hardware alone.
+    for (const p of state.parts) if (p.group !== 'hardware') state.checked.add(p.partId);
     renderPartList();
   });
   el('clearBtn').addEventListener('click', () => {
@@ -1174,6 +1231,7 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
+  toolSelect.addEventListener('change', updateAttachHint);
   // Closing the panel mid-upload would stop the uploads, so warn first.
   window.addEventListener('beforeunload', (event) => {
     if (uploadCounts().pending) event.preventDefault();
