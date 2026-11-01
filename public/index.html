@@ -721,9 +721,6 @@
       state.parts = body.parts;
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
-      // Parts are named in their Part Studio, not in an assembly.
-      el('nameBtn').hidden = state.kind === 'assembly';
-      if (state.kind === 'assembly' && namer.active) namer.close();
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
@@ -786,8 +783,16 @@
 
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = state.faces.has(part.partId) ? 'FACE' : 'PART';
-      tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected' : '';
+      tag.textContent = state.faces.has(part.partId) ? 'FACE' : (part.linked ? 'LINKED' : 'PART');
+      tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected'
+        : (part.linked ? 'Linked from another document (e.g. FRC Design App). Derive it into one of your Part Studios to name it.' : '');
+
+      // While naming, tapping a row numbers that part instead of ticking it.
+      row.addEventListener('click', (event) => {
+        if (!namer.active) return;
+        event.preventDefault();
+        namer.enqueueRow(part.partId);
+      });
 
       row.append(box, text, tag);
       (part.group === 'hardware' ? fold : list).appendChild(row);
@@ -870,7 +875,7 @@
       const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
       lastSelectionIds = new Set(ids);
       if (namer.active) {
-        for (const s of added) namer.enqueue(s.selectionId);
+        if (state.kind !== 'assembly') for (const s of added) namer.enqueue(s.selectionId);
         return;
       }
       const picked = selections.find((s) => s.selectionId);
@@ -971,7 +976,9 @@
       el('nameBtn').classList.add('on');
       state.pendingSelection = null;
       updateBanner();
-      this.message('Click each part in Onshape, in the order you want them numbered.');
+      this.message(state.kind === 'assembly'
+        ? 'Tap parts in the list below, in order. Parts tagged LINKED (FRC Design App, other documents) can\'t be renamed: Derive them into one of your Part Studios first.'
+        : 'Click each part in Onshape (or tap it in the list), in the order you want them numbered.');
       await this.loadNext();
     },
     close() {
@@ -1004,6 +1011,24 @@
     enqueue(selectionId) {
       this.chain = this.chain.then(() => this.nameSelection(selectionId)).catch(() => {});
     },
+    enqueueRow(partId) {
+      this.chain = this.chain.then(() => this.nameRow(partId)).catch(() => {});
+    },
+    async nameRow(partId) {
+      if (!this.active || !this.next) return;
+      const part = state.parts.find((p) => p.partId === partId);
+      if (!part || this.named.some((n) => n.partId === partId)) return;
+      const newName = this.format(this.next);
+      if (part.linked) {
+        this.linkedMessage(part);
+        return;
+      }
+      if (part.name === newName) { this.next += 1; this.render(); return; }
+      await this.rename(part.partId, newName, part.name);
+    },
+    linkedMessage(part) {
+      this.message(`${part.name} is linked from another document (like FRC Design App), so Onshape won't let it be renamed. Derive it into one of your Part Studios, insert it from there, then name it.`, 'bad');
+    },
     async nameSelection(selectionId) {
       if (!this.active || !this.next) return;
       let part;
@@ -1026,6 +1051,13 @@
           body: JSON.stringify({ partId, name: newName }),
         });
       } catch (err) {
+        const part = state.parts.find((p) => p.partId === partId);
+        if (err.body && err.body.linked && part) {
+          part.linked = true;
+          this.linkedMessage(part);
+          renderPartList();
+          return false;
+        }
         const msg = el('namerMsg');
         this.message(err.message, 'bad');
         if (err.body && err.body.needsWrite && state.context) {
@@ -1094,17 +1126,18 @@
   function loadCard() {
     const part = currentPart();
     resetPartFields();
-    el('cardTitle').textContent = part.name;
-    el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
-    renderUploadProgress();
     // The Onshape part name is the team's part number (e.g. "E05"). The
     // LUNA "Name" is a separate description the user types.
-    el('partNumberInput').value = part.name;
+    const number = part.name;
+    el('cardTitle').textContent = number;
+    el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
+    renderUploadProgress();
+    el('partNumberInput').value = number;
     el('materialInput').value = part.material || '';
     el('materialWarn').textContent = part.material
       ? ''
       : '⚠ No material set in Onshape. The manual asks for it on every part, so set it there too.';
-    const auto = autoProject(part.name);
+    const auto = autoProject(number);
     cardProjectSelect.value = auto ? String(auto.project.id) : projectSelect.value;
     el('projectWhy').textContent = auto ? `(from ${auto.why})` : '';
     if (cardProjectSelect.value !== loadedAssembliesFor) loadAssemblies(cardProjectSelect.value);
@@ -1113,7 +1146,7 @@
     el('toolWhy').textContent = guess ? `Picked ${guess.tool.name}: ${guess.why}.` : '';
     // In an assembly, each copy of a part counts towards the quantity.
     el('quantityInput').value = String(part.quantity || 1);
-    pickDrawingFor(part.name);
+    pickDrawingFor(number);
     updateAttachHint();
     el('nameInput').focus();
   }
