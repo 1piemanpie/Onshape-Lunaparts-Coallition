@@ -278,7 +278,7 @@ async function elementType(req) {
 // ---- Assemblies ---------------------------------------------------------
 // The panel lists every part in the assembly (and its sub-assemblies),
 // counted, with the team's own parts first and hardware tucked away.
-const TEAM_PART_NAME = /^(\d{2}-[a-z]{1,4}-\d{1,4}|[a-z]{1,3}-?\d{1,4})\b/i; // 26-OE-001, E05
+const TEAM_PART_NAME = /^(\d{2}[a-z]{1,3}-[a-z]{1,4}\d{1,4}|\d{2}-[a-z]{1,4}-\d{1,4}|[a-z]{1,3}-?\d{1,4})\b/i; // 26O-E001, E05
 const STOCK_NAME = /hex|shaft|spacer|thunder ?hex/i;
 const HARDWARE_NAME = new RegExp([
   'bolt', 'screw', 'nut', 'nylock', 'washer', 'bearing', 'gear', 'pulley', 'belt', 'sprocket', 'chain',
