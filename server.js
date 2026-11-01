@@ -328,20 +328,22 @@ async function fetchAssemblyParts(req) {
   const standard = new Set((def.parts || []).filter((p) => p.standardContent).map(partKey));
 
   const byKey = new Map();
-  const visit = (instances, depth) => {
+  // path: instance IDs from the top of the assembly down to this one, which
+  // the panel uses to highlight the part's copies in the 3D view.
+  const visit = (instances, depth, path = []) => {
     if (depth > 20) return;
     for (const inst of instances || []) {
       if (inst.suppressed) continue;
       if (inst.type === 'Assembly') {
         const sub = subs.get(subKey(inst));
-        if (sub) visit(sub.instances, depth + 1);
+        if (sub) visit(sub.instances, depth + 1, [...path, inst.id]);
         continue;
       }
       if (inst.type !== 'Part' || ![inst.documentId, inst.elementId].every((id) => ONSHAPE_ID.test(id || ''))) continue;
       if (!ONSHAPE_ID.test(inst.documentVersion || inst.documentMicroversion || '')) continue;
       const key = partKey(inst);
       const known = byKey.get(key);
-      if (known) { known.quantity += 1; continue; }
+      if (known) { known.quantity += 1; known.occurrences.push([...path, inst.id]); continue; }
       const name = String(inst.name || 'Part').replace(/\s*<\d+>$/, '');
       const standardContent = Boolean(inst.isStandardContent || standard.has(key));
       byKey.set(key, {
@@ -351,6 +353,7 @@ async function fetchAssemblyParts(req) {
         group: partGroup(name, standardContent),
         partId: inst.partId,
         source: instanceSource(ctx, inst),
+        occurrences: [[...path, inst.id]],
       });
     }
   };
@@ -410,6 +413,34 @@ async function resolvePart(req, partId) {
   return { source: part.source, partId: part.partId };
 }
 
+// The part's overall size, to tell shafts from plates (for the Machine guess)
+// and a plate's thickness (for the Thickness guess).
+const METERS_PER_INCH = 0.0254;
+
+app.get('/api/onshape/part-shape', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const partId = String(req.query.partId || '');
+  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+
+  try {
+    const { source, partId: sourcePartId } = await resolvePart(req, partId);
+    const box = await onshapeFetch(req,
+      `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/boundingboxes${sourceQuery(source)}`);
+    const dims = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
+      .map((m) => m / METERS_PER_INCH)
+      .sort((a, b) => a - b);
+    const [small, mid, long] = dims;
+    let shape = 'block';
+    if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
+    else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
+    res.json({ shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null });
+  } catch (err) {
+    console.error('Part shape lookup failed:', err.message);
+    res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
+  }
+});
+
 // Called when the panel opens so the first click is already fast.
 app.post('/api/onshape/warm', async (req, res) => {
   const dwe = currentDwe(req);
@@ -450,6 +481,7 @@ app.get('/api/onshape/parts', async (req, res) => {
         parts: list.parts.map((p) => ({
           partId: p.id, name: p.name, material: p.material || null, quantity: p.quantity, group: p.group,
           linked: !isLocalSource(req.session.onshapeContext, p.source),
+          occurrences: p.occurrences,
         })),
       });
     }
