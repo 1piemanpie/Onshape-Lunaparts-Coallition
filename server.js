@@ -2,7 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const crypto = require('crypto');
 const path = require('path');
-const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace } = require('./dxf');
+const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace, REAM_UNDERSIZE_IN } = require('./dxf');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -927,29 +927,47 @@ async function buildDxf(req, source, partId, faceId) {
   return faceToDxf(body, faceId, edgePoints);
 }
 
-async function exportDrawingPdf(req, ctx, drawingId, name) {
-  const started = await onshapeFetch(req,
-    `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingId}/translations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        formatName: 'PDF',
-        storeInDocument: false,
-        currentSheetOnly: false,
-        destinationName: name,
-      }),
-    });
-
+// Starts an Onshape export, waits for it, and returns the file's bytes.
+async function runTranslation(req, path, params, documentId, what, linkDocumentId = '') {
+  const started = await onshapeFetch(req, path, { method: 'POST', body: JSON.stringify(params) });
   const deadline = Date.now() + TRANSLATION_TIMEOUT_MS;
   let info = started;
   while (info.requestState === 'ACTIVE') {
-    if (Date.now() > deadline) throw new Error('Onshape took too long to export the drawing PDF.');
+    if (Date.now() > deadline) throw new Error(`Onshape took too long to export the ${what}.`);
     await new Promise((r) => setTimeout(r, 1000));
     info = await onshapeFetch(req, `/translations/${started.id}`);
   }
   if (info.requestState !== 'DONE' || !(info.resultExternalDataIds || []).length) {
-    throw new Error(`Onshape couldn't export the drawing PDF${info.failureReason ? `: ${info.failureReason}` : '.'}`);
+    throw new Error(`Onshape couldn't export the ${what}${info.failureReason ? `: ${info.failureReason}` : '.'}`);
   }
-  return onshapeFetch(req, `/documents/d/${ctx.documentId}/externaldata/${info.resultExternalDataIds[0]}`, { raw: true });
+  const link = linkDocumentId ? `?linkDocumentId=${linkDocumentId}` : '';
+  return onshapeFetch(req, `/documents/d/${documentId}/externaldata/${info.resultExternalDataIds[0]}${link}`, { raw: true });
+}
+
+// A STEP of one part, from its own Part Studio. Exports can only run against
+// a workspace or a version, not an older microversion.
+async function exportStep(req, source, partId, name) {
+  const m = source.dwe.match(/^d\/([0-9a-f]{24})\/(w|v|m)\/([0-9a-f]{24})\/e\/([0-9a-f]{24})$/);
+  if (!m) throw new Error('Couldn\'t find the part\'s Part Studio for the STEP file.');
+  if (m[2] === 'm') throw new Error('This part comes from another document that isn\'t at a saved version, so no STEP was made.');
+  return runTranslation(req, `/partstudios/${source.dwe}/translations`, {
+    formatName: 'STEP',
+    storeInDocument: false,
+    partIds: partId,
+    destinationName: name,
+    ...(source.configuration ? { configuration: source.configuration } : {}),
+    ...(source.linkDocumentId ? { linkDocumentId: source.linkDocumentId } : {}),
+  }, m[1], 'STEP file', source.linkDocumentId);
+}
+
+async function exportDrawingPdf(req, ctx, drawingId, name) {
+  return runTranslation(req,
+    `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingId}/translations`, {
+      formatName: 'PDF',
+      storeInDocument: false,
+      currentSheetOnly: false,
+      destinationName: name,
+    }, ctx.documentId, 'drawing PDF');
 }
 
 app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => {
@@ -964,6 +982,7 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   const drawingId = b.drawingId ? String(b.drawingId) : null;
   // DXFs are only for parts cut on the CNC; the panel decides from the Machine.
   const wantDxf = b.wantDxf !== false;
+  const wantStep = b.wantStep === true;
   const fileBase = safeFileName(b.partNumber);
   if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
   if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
@@ -982,15 +1001,21 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
     return res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
   }
 
-  const [dxf, pdf] = await Promise.allSettled([
+  const [dxf, pdf, step] = await Promise.allSettled([
     wantDxf ? buildDxf(req, resolved.source, resolved.partId, faceId) : Promise.resolve(null),
     drawingId ? exportDrawingPdf(req, ctx, drawingId, `${fileBase} drawing`) : Promise.resolve(null),
+    wantStep ? exportStep(req, resolved.source, resolved.partId, fileBase) : Promise.resolve(null),
   ]);
 
   if (!wantDxf) {
     // Not a CNC part: no DXF wanted, so nothing to report.
   } else if (dxf.status === 'fulfilled') {
     files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf });
+    const reamed = dxf.value.reamed || [];
+    if (reamed.length) {
+      const sizes = [...new Set(reamed)].map((d) => `${d.toFixed(3)}"`).join(' and ');
+      notes.push(`${reamed.length} bearing hole${reamed.length === 1 ? '' : 's'} (${sizes}) cut ${REAM_UNDERSIZE_IN.toFixed(3)}" small for reaming.`);
+    }
     if (faceId && !dxf.value.usedClicked) notes.push('The clicked face isn\'t flat, so the DXF uses the part\'s largest flat face.');
   } else {
     console.error('DXF build failed:', dxf.reason);
@@ -1003,6 +1028,15 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   } else {
     console.error('Drawing PDF export failed:', pdf.reason);
     notes.push(pdf.reason.status ? `Couldn't export the drawing PDF (Onshape ${pdf.reason.status}).` : pdf.reason.message);
+  }
+
+  if (wantStep) {
+    if (step.status === 'fulfilled') {
+      files.push({ name: `${fileBase}.step`, type: 'application/step', data: step.value });
+    } else {
+      console.error('STEP export failed:', step.reason);
+      notes.push(step.reason.status ? `Couldn't export the STEP file (Onshape ${step.reason.status}).` : step.reason.message);
+    }
   }
 
   if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes });

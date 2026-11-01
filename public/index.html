@@ -268,6 +268,10 @@
   .hint.good { color: var(--good); font-weight: 500; }
   .hint.bad { color: var(--bad); }
   .hint.left { text-align: left; margin-top: 3px; }
+  .hint.warn { color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 7px; }
+  .hint:empty { display: none; }
+  .check-row { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; text-transform: none; letter-spacing: normal; cursor: pointer; }
+  .check-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); box-shadow: none; }
 
   .link {
     font: inherit;
@@ -373,6 +377,12 @@
     <h2 id="cardTitle" class="card-title"></h2>
 
     <form id="partForm" class="card" autocomplete="off">
+      <div class="field full">
+        <label for="cardProjectSelect">Project<span class="req">*</span> <span id="projectWhy" class="sublabel"></span></label>
+        <!-- Each LUNA project is a robot subsystem; picked from the part
+             number (26O-E001 -> the Elevator project) when it can be. -->
+        <select id="cardProjectSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+      </div>
       <div class="field">
         <label for="nameInput">Name<span class="req">*</span></label>
         <input id="nameInput" type="text" maxlength="255" />
@@ -392,11 +402,13 @@
       <div class="field full">
         <label for="toolSelect">Machine</label>
         <select id="toolSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+        <p id="toolWhy" class="hint left"></p>
       </div>
 
       <div class="field full">
         <label for="materialInput">Material</label>
         <input id="materialInput" type="text" maxlength="255" />
+        <p id="materialWarn" class="hint left warn"></p>
       </div>
 
       <div class="field full">
@@ -447,6 +459,7 @@
              with a DXF of the part's flat face. -->
         <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
         <p id="attachHint" class="hint left"></p>
+        <label class="check-row"><input id="stepInput" type="checkbox" /> Also attach a STEP file</label>
       </div>
 
       <div class="field full">
@@ -515,6 +528,7 @@
   const thicknessSelect = el('thicknessSelect');
   const statusSelect = el('statusSelect');
   const parentSelect = el('parentSelect');
+  const cardProjectSelect = el('cardProjectSelect');
   const drawingSelect = el('drawingSelect');
   const attachHint = el('attachHint');
   const footerHint = el('footerHint');
@@ -646,7 +660,10 @@
       }
       if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
 
+      state.projects = body.projects;
+      state.tools = body.tools;
       fillSelect(projectSelect, body.projects, body.projects.length ? 'Select project' : 'No projects');
+      fillSelect(cardProjectSelect, body.projects, 'Select project');
       fillSelect(toolSelect, body.tools, 'Select tool');
       fillSelect(thicknessSelect, body.thicknesses, 'Select thickness');
 
@@ -680,7 +697,9 @@
   }
 
   // ---- Parent Assembly depends on the chosen project ---------------------
+  let loadedAssembliesFor = '';
   async function loadAssemblies(projectId) {
+    loadedAssembliesFor = projectId || '';
     fillSelect(parentSelect, [], 'None');
     if (!projectId) return;
 
@@ -780,10 +799,54 @@
   function updateListFooter() {
     const n = state.checked.size;
     el('checkedCount').textContent = `${n} part${n === 1 ? '' : 's'} selected`;
-    el('startBtn').disabled = n === 0 || !projectSelect.value || !statusSelect.value;
+    // A project is only needed for ticked parts whose number doesn't pick one.
+    const needsProject = state.parts.some((p) => state.checked.has(p.partId) && !autoProject(p.name));
+    const missing = needsProject && !projectSelect.value;
+    el('startBtn').disabled = n === 0 || missing || !statusSelect.value;
     if (state.screen === 'list') {
-      showHint(n && !projectSelect.value ? 'Pick a project first.' : '');
+      showHint(n && missing ? 'Pick a project first.' : '');
     }
+  }
+
+  // ---- Smart defaults (from the team's manufacturing manual) ---------------
+  // Each LUNA project is one subsystem. A part number like 26O-E001 picks the
+  // project whose part-number prefix it starts with, or else the project
+  // whose name starts with the subsystem letters (E -> Elevator).
+  function autoProject(partName) {
+    const name = String(partName || '').trim().toUpperCase();
+    const projects = state.projects || [];
+    if (!name) return null;
+    const byPrefix = projects
+      .filter((p) => p.prefix && name.startsWith(String(p.prefix).toUpperCase()))
+      .sort((a, b) => String(b.prefix).length - String(a.prefix).length)[0];
+    if (byPrefix) return { project: byPrefix, why: `prefix ${byPrefix.prefix}` };
+    const m = name.match(/^\d{2}[A-Z]{1,3}-([A-Z]{1,4})\d/);
+    if (!m) return null;
+    const matches = projects.filter((p) => String(p.name).toUpperCase().startsWith(m[1]));
+    return matches.length === 1 ? { project: matches[0], why: `${m[1]} in ${name.split(/\s/)[0]}` } : null;
+  }
+
+  // The machine the part most likely starts on, from its material and shape.
+  // Returns { tool, why } or null; the user can always change it.
+  const MACHINE_RULES = [
+    { test: (p, m) => /srpp|polypropylene/.test(m), tools: [/router/, /cnc|mill/], why: 'SRPP is routed' },
+    { test: (p, m) => /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|print/.test(m), tools: [/print|3d/], why: '3D-printed material' },
+    { test: (p) => p.group === 'stock' || /shaft|spacer|round tube/i.test(p.name), tools: [/lathe/], why: 'shaft or spacer' },
+    { test: (p, m) => /alum|6061|7075|polycarb|lexan|delrin|acetal|hdpe|uhmw|carbon/.test(m), tools: [/cnc|mill/, /router/], why: 'plate material' },
+  ];
+
+  function guessTool(part) {
+    const material = String(part.material || '').toLowerCase();
+    const tools = state.tools || [];
+    for (const rule of MACHINE_RULES) {
+      if (!rule.test(part, material)) continue;
+      for (const re of rule.tools) {
+        const tool = tools.find((t) => re.test(String(t.name).toLowerCase()) && !(re.source !== 'lathe' && /lathe/i.test(t.name)));
+        if (tool) return { tool, why: rule.why };
+      }
+      return null;
+    }
+    return null;
   }
 
   // ---- Onshape selections -> "Use Selection" banner ------------------------
@@ -1038,6 +1101,16 @@
     // LUNA "Name" is a separate description the user types.
     el('partNumberInput').value = part.name;
     el('materialInput').value = part.material || '';
+    el('materialWarn').textContent = part.material
+      ? ''
+      : '⚠ No material set in Onshape. The manual asks for it on every part, so set it there too.';
+    const auto = autoProject(part.name);
+    cardProjectSelect.value = auto ? String(auto.project.id) : projectSelect.value;
+    el('projectWhy').textContent = auto ? `(from ${auto.why})` : '';
+    if (cardProjectSelect.value !== loadedAssembliesFor) loadAssemblies(cardProjectSelect.value);
+    const guess = guessTool(part);
+    toolSelect.value = guess ? String(guess.tool.id) : '';
+    el('toolWhy').textContent = guess ? `Picked ${guess.tool.name}: ${guess.why}.` : '';
     // In an assembly, each copy of a part counts towards the quantity.
     el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(part.name);
@@ -1071,6 +1144,8 @@
     statusSelect.value = state.defaultStatusId || '';
     parentSelect.value = '';
     drawingSelect.value = '';
+    // reset() unticks STEP; put back what this browser remembers.
+    try { el('stepInput').checked = localStorage.getItem('lunaStep') === '1'; } catch (err) { /* storage blocked */ }
     showHint('');
   }
 
@@ -1100,7 +1175,7 @@
   function uploadCard() {
     const value = (id) => el(id).value.trim();
     const part = {
-      projectId: projectSelect.value,
+      projectId: cardProjectSelect.value,
       name: value('nameInput'),
       partNumber: value('partNumberInput'),
       statusId: statusSelect.value,
@@ -1144,6 +1219,7 @@
       faceId: face.faceId || null,
       drawingId: drawingSelect.value,
       wantDxf: wantsDxf(onshapePart),
+      wantStep: el('stepInput').checked,
       result,
     });
     log(`Queued ${result.name} for upload.`);
@@ -1192,12 +1268,12 @@
       result.name = created.partNumber || result.name;
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      if (!job.wantDxf && !job.drawingId) {
+      if (!job.wantDxf && !job.drawingId && !job.wantStep) {
         result.outcome = 'created';
         result.detail = 'Created (no DXF or drawing to attach)';
         result.kind = 'good';
       } else {
-        result.detail = `Attaching ${[job.wantDxf && 'DXF', job.drawingId && 'drawing PDF'].filter(Boolean).join(' and ')}…`;
+        result.detail = `Attaching ${[job.wantDxf && 'DXF', job.drawingId && 'drawing PDF', job.wantStep && 'STEP'].filter(Boolean).join(' and ')}…`;
         renderUploadProgress();
         const files = await attachFiles(created, job);
         result.outcome = 'created';
@@ -1228,6 +1304,7 @@
           faceId: job.faceId,
           drawingId: job.drawingId,
           wantDxf: job.wantDxf,
+          wantStep: job.wantStep,
           partNumber: created.partNumber || job.onshapePart.name,
         }),
       });
@@ -1418,7 +1495,16 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
-  toolSelect.addEventListener('change', updateAttachHint);
+  toolSelect.addEventListener('change', () => { el('toolWhy').textContent = ''; updateAttachHint(); });
+  cardProjectSelect.addEventListener('change', () => {
+    el('projectWhy').textContent = '';
+    loadAssemblies(cardProjectSelect.value);
+  });
+  // STEP on/off is remembered in this browser.
+  try { el('stepInput').checked = localStorage.getItem('lunaStep') === '1'; } catch (err) { /* storage blocked */ }
+  el('stepInput').addEventListener('change', () => {
+    try { localStorage.setItem('lunaStep', el('stepInput').checked ? '1' : '0'); } catch (err) { /* storage blocked */ }
+  });
   // Closing the panel mid-upload would stop the uploads, so warn first.
   window.addEventListener('beforeunload', (event) => {
     if (uploadCounts().pending) event.preventDefault();
