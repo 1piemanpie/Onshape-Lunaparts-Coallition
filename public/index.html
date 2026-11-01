@@ -878,12 +878,6 @@
       if (event.data.messageName !== 'SELECTION') return;
 
       const selections = event.data.selections || [];
-      // In assemblies, record what Onshape sends for a click (in the Sync log)
-      // so the part highlight can be matched to it.
-      if (state.kind === 'assembly' && selections.length) {
-        const text = JSON.stringify(selections.slice(-1)).slice(0, 400).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-        log(`Assembly selection: ${text}`);
-      }
       // Onshape sends the whole selection each time, so work out which
       // entities were just added (for the namer, one part per click).
       const ids = selections.map((s) => s.selectionId).filter(Boolean);
@@ -1260,22 +1254,27 @@
     }, ONSHAPE_ORIGIN);
   }
 
+  // Only Part Studios get a highlight. Onshape's highlight message accepts
+  // ENTITY, BODY or GEOMETRY selections, and none of those can name a part
+  // inside an assembly. Sending an assembly selection left Onshape stuck
+  // waiting (feature list went white and stopped taking clicks).
+  let highlightActive = false;
   function clearHighlight() {
+    if (!highlightActive) return;
+    highlightActive = false;
     postToOnshape({ messageName: 'stopRequest' });
   }
 
   function highlightPart(part) {
     clearHighlight();
-    const selections = state.kind === 'assembly'
-      // Same shape Onshape sends when a part is clicked in an assembly:
-      // { selectionType: 'OCCURRENCE', selectionId, occurrencePath }.
-      ? (part.occurrences || []).map((path) => ({
-        selectionType: 'OCCURRENCE', selectionId: path[path.length - 1], occurrencePath: path,
-      }))
-      : [{ selectionType: 'ENTITY', selectionId: part.partId, entityType: 'BODY' }];
-    if (!selections.length) return;
+    if (state.kind === 'assembly' || !part.partId) return;
     highlightCounter += 1;
-    postToOnshape({ messageName: 'requestSelectionHighlight', messageId: `highlight-${highlightCounter}`, selections });
+    highlightActive = true;
+    postToOnshape({
+      messageName: 'requestSelectionHighlight',
+      messageId: `highlight-${highlightCounter}`,
+      selections: [{ selectionType: 'ENTITY', selectionId: part.partId, entityType: 'BODY' }],
+    });
   }
 
   function nextCard() {
