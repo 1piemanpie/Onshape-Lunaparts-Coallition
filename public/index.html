@@ -721,9 +721,9 @@
       state.parts = body.parts;
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
-      // Parts are named in their Part Studio, not in an assembly.
-      el('nameBtn').hidden = state.kind === 'assembly';
-      if (state.kind === 'assembly' && namer.active) namer.close();
+      // Numbers given to linked parts (FRC Design App) live in this browser.
+      const numbers = namer.lunaNumbers();
+      for (const part of state.parts) part.lunaNumber = numbers[part.partId] || null;
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
@@ -771,10 +771,12 @@
       text.className = 'part-text';
       const name = document.createElement('span');
       name.className = 'part-name';
-      name.textContent = part.name;
+      name.textContent = part.lunaNumber || part.name;
       const sub = document.createElement('span');
       sub.className = 'part-sub';
-      sub.textContent = part.material || 'No material';
+      sub.textContent = part.lunaNumber
+        ? `${part.name} \u00b7 ${part.material || 'No material'}`
+        : (part.material || 'No material');
       if (part.quantity > 1) {
         const qty = document.createElement('span');
         qty.className = 'qty';
@@ -789,6 +791,13 @@
       tag.textContent = state.faces.has(part.partId) ? 'FACE' : 'PART';
       tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected' : '';
 
+      // While naming, tapping a row numbers that part instead of ticking it.
+      row.addEventListener('click', (event) => {
+        if (!namer.active) return;
+        event.preventDefault();
+        namer.enqueueRow(part.partId);
+      });
+
       row.append(box, text, tag);
       (part.group === 'hardware' ? fold : list).appendChild(row);
     }
@@ -800,7 +809,7 @@
     const n = state.checked.size;
     el('checkedCount').textContent = `${n} part${n === 1 ? '' : 's'} selected`;
     // A project is only needed for ticked parts whose number doesn't pick one.
-    const needsProject = state.parts.some((p) => state.checked.has(p.partId) && !autoProject(p.name));
+    const needsProject = state.parts.some((p) => state.checked.has(p.partId) && !autoProject(p.lunaNumber || p.name));
     const missing = needsProject && !projectSelect.value;
     el('startBtn').disabled = n === 0 || missing || !statusSelect.value;
     if (state.screen === 'list') {
@@ -870,7 +879,7 @@
       const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
       lastSelectionIds = new Set(ids);
       if (namer.active) {
-        for (const s of added) namer.enqueue(s.selectionId);
+        if (state.kind !== 'assembly') for (const s of added) namer.enqueue(s.selectionId);
         return;
       }
       const picked = selections.find((s) => s.selectionId);
@@ -949,6 +958,20 @@
     named: [],          // [{ partId, oldName, newName }] for Undo
     chain: Promise.resolve(),
     prefixKey() { return state.context ? `lunaPrefix:${state.context.documentId}` : 'lunaPrefix'; },
+    // Parts linked in from other documents (FRC Design App shafts, spacers)
+    // can't be renamed in Onshape, so their number is kept here and used as
+    // the LUNA part number. Stored per document in this browser.
+    numbersKey() { return state.context ? `lunaNumbers:${state.context.documentId}` : 'lunaNumbers'; },
+    lunaNumbers() {
+      try { return JSON.parse(localStorage.getItem(this.numbersKey()) || '{}') || {}; } catch (err) { return {}; }
+    },
+    setLunaNumber(partId, number) {
+      const all = this.lunaNumbers();
+      if (number) all[partId] = number; else delete all[partId];
+      try { localStorage.setItem(this.numbersKey(), JSON.stringify(all)); } catch (err) { /* storage blocked */ }
+      const listed = state.parts.find((p) => p.partId === partId);
+      if (listed) listed.lunaNumber = number || null;
+    },
     prefix() { return el('namerPrefix').value.trim().toUpperCase(); },
     format(n) { return `${this.prefix()}${String(n).padStart(3, '0')}`; },
     message(text, kind = '') {
@@ -971,7 +994,9 @@
       el('nameBtn').classList.add('on');
       state.pendingSelection = null;
       updateBanner();
-      this.message('Click each part in Onshape, in the order you want them numbered.');
+      this.message(state.kind === 'assembly'
+        ? 'Tap parts in the list below, in order. Parts made in this document are renamed in Onshape; FRC Design App and other linked parts get the number for LUNA.'
+        : 'Click each part in Onshape (or tap it in the list), in the order you want them numbered.');
       await this.loadNext();
     },
     close() {
@@ -993,7 +1018,11 @@
         if (projectSelect.value) query.set('project_id', projectSelect.value);
         const body = await getJson(`/api/onshape/next-number?${query}`);
         if (prefix !== this.prefix()) return; // typed again meanwhile
-        this.next = body.next;
+        // Numbers already given to linked parts count as used too.
+        const pattern = new RegExp(`^${prefix.replace(/[^A-Z0-9-]/g, '')}(\\d+)$`);
+        const local = Object.values(this.lunaNumbers())
+          .map((n) => (String(n).match(pattern) || [])[1]).filter(Boolean).map(Number);
+        this.next = Math.max(body.next, ...local.map((n) => n + 1));
         try { localStorage.setItem(this.prefixKey(), prefix); } catch (err) { /* storage blocked */ }
         this.render();
       } catch (err) {
@@ -1003,6 +1032,30 @@
     // Clicks are handled one at a time so the numbers stay in click order.
     enqueue(selectionId) {
       this.chain = this.chain.then(() => this.nameSelection(selectionId)).catch(() => {});
+    },
+    enqueueRow(partId) {
+      this.chain = this.chain.then(() => this.nameRow(partId)).catch(() => {});
+    },
+    async nameRow(partId) {
+      if (!this.active || !this.next) return;
+      const part = state.parts.find((p) => p.partId === partId);
+      if (!part || this.named.some((n) => n.partId === partId)) return;
+      const newName = this.format(this.next);
+      if (part.linked) {
+        this.assignLuna(part, newName);
+        return;
+      }
+      if (part.name === newName) { this.next += 1; this.render(); return; }
+      await this.rename(part.partId, newName, part.name);
+    },
+    assignLuna(part, newName) {
+      this.named.push({ partId: part.partId, oldName: part.lunaNumber || null, newName, linked: true });
+      this.setLunaNumber(part.partId, newName);
+      this.next += 1;
+      this.message(`${part.name} \u2192 ${newName} (in LUNA; it's linked from another document, so Onshape keeps its name)`);
+      showToast(`\u2713 Numbered ${newName}`);
+      this.render();
+      renderPartList();
     },
     async nameSelection(selectionId) {
       if (!this.active || !this.next) return;
@@ -1026,6 +1079,13 @@
           body: JSON.stringify({ partId, name: newName }),
         });
       } catch (err) {
+        // Linked parts can't be renamed in Onshape; number them for LUNA instead.
+        const part = state.parts.find((p) => p.partId === partId);
+        if (err.body && err.body.linked && part && !undo) {
+          part.linked = true;
+          this.assignLuna(part, newName);
+          return true;
+        }
         const msg = el('namerMsg');
         this.message(err.message, 'bad');
         if (err.body && err.body.needsWrite && state.context) {
@@ -1055,6 +1115,14 @@
     async undo() {
       const last = this.named.pop();
       if (!last) return;
+      if (last.linked) {
+        this.setLunaNumber(last.partId, last.oldName);
+        this.next -= 1;
+        this.message(`Took ${last.newName} back off.`);
+        this.render();
+        renderPartList();
+        return;
+      }
       this.render();
       const ok = await this.rename(last.partId, last.oldName, last.newName, { undo: true });
       if (!ok) this.named.push(last);
@@ -1094,17 +1162,21 @@
   function loadCard() {
     const part = currentPart();
     resetPartFields();
-    el('cardTitle').textContent = part.name;
+    // The Onshape part name is the team's part number (e.g. "E05"). The
+    // LUNA "Name" is a separate description the user types. A linked part
+    // (FRC Design App) numbered with NAME uses that number, and its Onshape
+    // name ("Hex Shaft 1/2 x 6") becomes the LUNA Name.
+    const number = part.lunaNumber || part.name;
+    el('cardTitle').textContent = number;
     el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
     renderUploadProgress();
-    // The Onshape part name is the team's part number (e.g. "E05"). The
-    // LUNA "Name" is a separate description the user types.
-    el('partNumberInput').value = part.name;
+    el('partNumberInput').value = number;
+    if (part.lunaNumber) el('nameInput').value = part.name;
     el('materialInput').value = part.material || '';
     el('materialWarn').textContent = part.material
       ? ''
       : '⚠ No material set in Onshape. The manual asks for it on every part, so set it there too.';
-    const auto = autoProject(part.name);
+    const auto = autoProject(number);
     cardProjectSelect.value = auto ? String(auto.project.id) : projectSelect.value;
     el('projectWhy').textContent = auto ? `(from ${auto.why})` : '';
     if (cardProjectSelect.value !== loadedAssembliesFor) loadAssemblies(cardProjectSelect.value);
@@ -1113,7 +1185,7 @@
     el('toolWhy').textContent = guess ? `Picked ${guess.tool.name}: ${guess.why}.` : '';
     // In an assembly, each copy of a part counts towards the quantity.
     el('quantityInput').value = String(part.quantity || 1);
-    pickDrawingFor(part.name);
+    pickDrawingFor(number);
     updateAttachHint();
     el('nameInput').focus();
   }
@@ -1362,8 +1434,8 @@
       attachHint.textContent = dxf ? `Will attach: ${dxf} + drawing PDF.` : `Will attach: drawing PDF. ${noDxf}.`;
     } else {
       attachHint.className = 'hint left bad';
-      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(part.name));
-      const missing = matched ? 'No drawing chosen' : `No drawing found for ${part.name}`;
+      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(part.lunaNumber || part.name));
+      const missing = matched ? 'No drawing chosen' : `No drawing found for ${part.lunaNumber || part.name}`;
       attachHint.textContent = dxf
         ? `⚠ ${missing}. Only the ${dxf} will be attached.`
         : `⚠ ${missing}, and ${noDxf.charAt(0).toLowerCase()}${noDxf.slice(1)}. Nothing will be attached.`;

@@ -310,6 +310,12 @@ function instanceSource(ctx, inst) {
 
 const assemblyLists = new Map();
 
+// A part made in this document's own workspace (as opposed to one linked in
+// from another document or a saved version).
+function isLocalSource(ctx, source) {
+  return source.dwe.startsWith(`d/${ctx.documentId}/w/${ctx.workspaceId}/`);
+}
+
 async function fetchAssemblyParts(req) {
   const ctx = req.session.onshapeContext;
   const def = await onshapeFetch(req,
@@ -435,6 +441,7 @@ app.get('/api/onshape/parts', async (req, res) => {
         kind: 'assembly',
         parts: list.parts.map((p) => ({
           partId: p.id, name: p.name, material: p.material || null, quantity: p.quantity, group: p.group,
+          linked: !isLocalSource(req.session.onshapeContext, p.source),
         })),
       });
     }
@@ -543,9 +550,11 @@ app.get('/api/onshape/next-number', async (req, res) => {
   const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\b`, 'i');
   const numbers = [];
   try {
-    const index = await getPartIndex(req, dwe, { refresh: true });
-    for (const part of index.partsById.values()) {
-      const m = String(part.name || '').match(pattern);
+    const names = await elementType(req) === 'ASSEMBLY'
+      ? (await getAssemblyParts(req, { refresh: true })).parts.map((p) => p.name)
+      : [...(await getPartIndex(req, dwe, { refresh: true })).partsById.values()].map((p) => p.name);
+    for (const name of names) {
+      const m = String(name || '').match(pattern);
       if (m) numbers.push(Number(m[1]));
     }
   } catch (err) {
@@ -578,10 +587,22 @@ app.post('/api/onshape/rename', express.json(), async (req, res) => {
   if (!PART_NAME.test(name)) return res.status(400).json({ error: 'That name has characters Onshape parts can\'t use here.' });
 
   try {
+    // In an assembly, rename the part in its own Part Studio. That only works
+    // for parts made in this document: parts linked in from elsewhere (FRC
+    // Design App, other documents, saved versions) can't be changed from here.
+    let target = { dwe, partId, configuration: '' };
+    let assemblyPart = null;
     if (await elementType(req) === 'ASSEMBLY') {
-      return res.status(409).json({ error: 'Name parts from their Part Studio, not the assembly.' });
+      const list = await getAssemblyParts(req);
+      assemblyPart = list.byId.get(partId);
+      if (!assemblyPart) return res.status(404).json({ error: 'Couldn\'t find that part in the assembly any more. Refresh the list.' });
+      if (!isLocalSource(ctx, assemblyPart.source)) {
+        return res.status(409).json({ error: 'This part is linked from another document, so Onshape can\'t rename it here.', linked: true });
+      }
+      target = { dwe: assemblyPart.source.dwe, partId: assemblyPart.partId, configuration: assemblyPart.source.configuration };
     }
-    const path = `/metadata/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}/p/${encodeURIComponent(partId)}`;
+    const query = target.configuration ? `?configuration=${encodeURIComponent(target.configuration)}` : '';
+    const path = `/metadata/${target.dwe}/p/${encodeURIComponent(target.partId)}${query}`;
     // Look up the Name property's ID rather than hard-coding it.
     const meta = await onshapeFetch(req, path);
     const nameProp = (meta.properties || []).find((p) => p.name === 'Name');
@@ -590,15 +611,20 @@ app.post('/api/onshape/rename', express.json(), async (req, res) => {
       method: 'POST',
       body: JSON.stringify({
         jsonType: 'metadata-part',
-        partId,
+        partId: target.partId,
         properties: [{ propertyId: nameProp.propertyId, value: name }],
       }),
     });
 
     // Keep the cached part list in step so the checklist shows the new name.
-    const index = await getPartIndex(req, dwe);
-    const cached = index.partsById.get(partId);
-    if (cached) cached.name = name;
+    if (assemblyPart) {
+      assemblyPart.name = name;
+      assemblyPart.group = partGroup(name, false);
+    } else {
+      const index = await getPartIndex(req, dwe);
+      const cached = index.partsById.get(partId);
+      if (cached) cached.name = name;
+    }
     res.json({ partId, name, oldName: nameProp.value });
   } catch (err) {
     console.error('Onshape rename failed:', err);
