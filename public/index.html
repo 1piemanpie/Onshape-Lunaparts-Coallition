@@ -5,27 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Parts Tracker Bridge</title>
 
-<!-- Condensed headings like a shop-floor board; plain sans for fields. -->
+<!-- Condensed headings like a shop-floor board; LUNA Parts' Instrument Sans for fields. -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="icon" href="/icon.png" />
 
 <style>
-  /* Navy and gold, with pill "chips" instead of dropdowns, sized for
-     Onshape's ~300px right panel. */
+  /* 6328-style layout (pill "chips" instead of dropdowns, sticky footer)
+     in LUNA Parts' own black and white, sized for Onshape's ~300px panel. */
   :root {
-    --bg: #1f2b5c;
-    --card: #16204a;
-    --field: #111a3d;
-    --line: #2e3c74;
-    --text: #eef1fa;
-    --muted: #9aa5cc;
-    --gold: #e9b44c;
-    --gold-ink: #1a1f3a;
-    --good: #4ade80;
-    --bad: #f87171;
-    --pending: #fbbf24;
+    --bg: #ffffff;
+    --card: #ffffff;
+    --field: #ffffff;
+    --line: #e4e4e7;
+    --text: #1b1b18;
+    --muted: #71717a;
+    --accent: #1b1b18;
+    --accent-ink: #ffffff;
+    --good: #16a34a;
+    --bad: #dc2626;
+    --pending: #d97706;
     --heading: 'Barlow Condensed', 'Arial Narrow', sans-serif;
   }
 
@@ -36,7 +36,7 @@
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+    font-family: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
     font-size: 13px;
   }
 
@@ -46,11 +46,11 @@
   .top {
     display: flex; align-items: center; gap: 8px;
     padding: 10px 0 8px;
-    border-bottom: 2px solid var(--gold);
+    border-bottom: 2px solid var(--accent);
   }
   .top img { width: 30px; height: 30px; flex-shrink: 0; }
   .brand { font-family: var(--heading); font-weight: 700; font-size: 17px; letter-spacing: 0.04em; line-height: 1; }
-  .sub { font-family: var(--heading); font-weight: 500; font-size: 11px; letter-spacing: 0.12em; color: var(--gold); margin-top: 2px; }
+  .sub { font-family: var(--heading); font-weight: 500; font-size: 11px; letter-spacing: 0.12em; color: var(--muted); margin-top: 2px; }
   .doc { margin-left: auto; text-align: right; font-size: 10px; color: var(--muted); line-height: 1.3; }
 
   .tabs { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--line); }
@@ -59,11 +59,11 @@
     color: var(--muted); background: none; border: none; padding: 8px 0 6px;
     border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
   }
-  .tab.active { color: var(--text); border-bottom-color: var(--gold); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
   .tab:disabled { cursor: default; opacity: 0.5; }
   .tab-link {
     margin-left: auto; font-family: var(--heading); font-weight: 600; font-size: 12px;
-    letter-spacing: 0.08em; color: var(--gold); text-decoration: none;
+    letter-spacing: 0.08em; color: var(--accent); text-decoration: none;
   }
 
   .status { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 11.5px; color: var(--muted); }
@@ -90,7 +90,7 @@
     font-family: var(--heading); font-weight: 600; font-size: 11.5px;
     letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
   }
-  .req { color: var(--gold); margin-left: 2px; }
+  .req { color: #ef4444; margin-left: 2px; }
 
   input, select, textarea {
     width: 100%;
@@ -103,11 +103,11 @@
     padding: 6px 8px;
     outline: none;
   }
-  input::placeholder, textarea::placeholder { color: #67729c; }
+  input::placeholder, textarea::placeholder { color: #a1a1aa; }
   select { padding-right: 4px; }
   select option { background: var(--field); color: var(--text); }
   textarea { resize: vertical; min-height: 44px; }
-  input:focus, select:focus, textarea:focus { border-color: var(--gold); }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   select:disabled, input:disabled { color: var(--muted); opacity: 0.7; }
 
   /* Chips: a select with class "chips" stays in the page (the code reads
@@ -120,8 +120,8 @@
     border: 1px solid var(--line); border-radius: 999px;
     padding: 4px 10px; cursor: pointer; line-height: 1.3;
   }
-  .chip:hover { border-color: var(--gold); }
-  .chip.on { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); font-weight: 600; }
+  .chip:hover { border-color: #a1a1aa; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
   .chip-empty { font-size: 11.5px; color: var(--muted); padding: 3px 0; }
 
   /* ---- Sticky footer ---- */
@@ -135,14 +135,14 @@
   .btn {
     width: 100%;
     font-family: var(--heading); font-weight: 700; font-size: 15px; letter-spacing: 0.08em;
-    color: var(--gold-ink);
-    background: var(--gold);
+    color: var(--accent-ink);
+    background: var(--accent);
     border: none;
     border-radius: 8px;
     padding: 8px;
     cursor: pointer;
   }
-  .btn:disabled { background: #3a4677; color: var(--muted); cursor: default; }
+  .btn:disabled { background: var(--line); color: var(--muted); cursor: default; }
   .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
   .hint.good { color: var(--good); font-weight: 500; }
   .hint.bad { color: var(--bad); }
@@ -173,7 +173,7 @@
     font-size: 10px;
     line-height: 1.5;
   }
-  #logWindow a { color: var(--gold); }
+  #logWindow a { color: var(--accent); }
   #logWindow .time { color: var(--muted); }
   #logWindow .success { color: var(--good); }
   #logWindow .error { color: var(--bad); }
