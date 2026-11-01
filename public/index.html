@@ -844,6 +844,7 @@
   const MACHINE_RULES = [
     { test: (p, m) => /srpp|polypropylene/.test(m), tools: [/router/, /cnc|mill/], why: 'SRPP is routed' },
     { test: (p, m) => /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|print/.test(m), tools: [/print|3d/], why: '3D-printed material' },
+    { test: (p) => p.shape === 'shaft', tools: [/lathe/], why: 'long and round/hex, like a shaft' },
     { test: (p) => p.group === 'stock' || /shaft|spacer|round tube/i.test(p.name), tools: [/lathe/], why: 'shaft or spacer' },
     { test: (p, m) => /alum|6061|7075|polycarb|lexan|delrin|acetal|hdpe|uhmw|carbon/.test(m), tools: [/cnc|mill/, /router/], why: 'plate material' },
   ];
@@ -877,6 +878,12 @@
       if (event.data.messageName !== 'SELECTION') return;
 
       const selections = event.data.selections || [];
+      // In assemblies, record what Onshape sends for a click (in the Sync log)
+      // so the part highlight can be matched to it.
+      if (state.kind === 'assembly' && selections.length) {
+        const text = JSON.stringify(selections.slice(-1)).slice(0, 400).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        log(`Assembly selection: ${text}`);
+      }
       // Onshape sends the whole selection each time, so work out which
       // entities were just added (for the namer, one part per click).
       const ids = selections.map((s) => s.selectionId).filter(Boolean);
@@ -1183,14 +1190,88 @@
     cardProjectSelect.value = auto ? String(auto.project.id) : projectSelect.value;
     el('projectWhy').textContent = auto ? `(from ${auto.why})` : '';
     if (cardProjectSelect.value !== loadedAssembliesFor) loadAssemblies(cardProjectSelect.value);
-    const guess = guessTool(part);
-    toolSelect.value = guess ? String(guess.tool.id) : '';
-    el('toolWhy').textContent = guess ? `Picked ${guess.tool.name}: ${guess.why}.` : '';
+    state.toolTouched = false;
+    state.thicknessTouched = false;
+    applyToolGuess(part);
+    highlightPart(part);
+    loadShape(part);
     // In an assembly, each copy of a part counts towards the quantity.
     el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(number);
     updateAttachHint();
     el('nameInput').focus();
+  }
+
+  function applyToolGuess(part) {
+    const guess = guessTool(part);
+    toolSelect.value = guess ? String(guess.tool.id) : '';
+    el('toolWhy').textContent = guess ? `Picked ${guess.tool.name}: ${guess.why}.` : '';
+    updateAttachHint();
+  }
+
+  // The part's size from Onshape: shafts go to the lathe, and a plate's
+  // thickness picks the Thickness chip. Arrives a moment after the card opens.
+  async function loadShape(part) {
+    if (part.shape !== undefined) return applyShape(part);
+    try {
+      const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
+      part.shape = body.shape;
+      part.thickness = body.thickness;
+    } catch (err) {
+      part.shape = null;
+      log(`Couldn't measure ${part.name}: ${err.message}`, 'error');
+    }
+    if (currentPartId() === part.partId && state.screen === 'card') applyShape(part);
+  }
+
+  function inchesFromLabel(label) {
+    const text = String(label).replace(/["”in\s]/g, '');
+    const frac = text.match(/^(\d+)\/(\d+)$/);
+    if (frac) return Number(frac[1]) / Number(frac[2]);
+    const n = Number(text);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  function applyShape(part) {
+    if (!state.toolTouched) applyToolGuess(part);
+    // Shafts and spacers don't have a stock thickness (Micah), even a thin
+    // spacer whose size looks plate-like.
+    const lathePart = part.group === 'stock' || /shaft|spacer|bushing|standoff/i.test(part.name)
+      || /lathe/i.test((toolSelect.selectedOptions[0] || {}).textContent || '');
+    if (part.thickness && !state.thicknessTouched && !lathePart) {
+      const options = [...thicknessSelect.options]
+        .map((o) => ({ value: o.value, inches: inchesFromLabel(o.textContent) }))
+        .filter((o) => o.value && o.inches);
+      const match = options.find((o) => Math.abs(o.inches - part.thickness) <= 0.01);
+      if (match) thicknessSelect.value = match.value;
+    }
+  }
+
+  // Selects the part on screen in Onshape so it's clear which one the card
+  // is about. Onshape keeps one highlight request open; stopRequest clears it.
+  let highlightCounter = 0;
+  function postToOnshape(message) {
+    if (!state.context) return;
+    window.parent.postMessage({
+      documentId: state.context.documentId,
+      workspaceId: state.context.workspaceId,
+      elementId: state.context.elementId,
+      ...message,
+    }, ONSHAPE_ORIGIN);
+  }
+
+  function clearHighlight() {
+    postToOnshape({ messageName: 'stopRequest' });
+  }
+
+  function highlightPart(part) {
+    clearHighlight();
+    const selections = state.kind === 'assembly'
+      ? (part.occurrences || []).map((path) => ({ selectionType: 'ENTITY', selectionId: path.join('/'), entityType: 'BODY' }))
+      : [{ selectionType: 'ENTITY', selectionId: part.partId, entityType: 'BODY' }];
+    if (!selections.length) return;
+    highlightCounter += 1;
+    postToOnshape({ messageName: 'requestSelectionHighlight', messageId: `highlight-${highlightCounter}`, selections });
   }
 
   function nextCard() {
@@ -1458,6 +1539,7 @@
   };
 
   function showDone() {
+    clearHighlight();
     showScreen('done');
     renderDone();
   }
@@ -1566,6 +1648,7 @@
   el('skipBtn').addEventListener('click', skipCard);
   el('submitBtn').addEventListener('click', uploadCard);
   el('backBtn').addEventListener('click', () => {
+    clearHighlight();
     showScreen('list');
     renderPartList();
   });
@@ -1574,7 +1657,8 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
-  toolSelect.addEventListener('change', () => { el('toolWhy').textContent = ''; updateAttachHint(); });
+  toolSelect.addEventListener('change', () => { state.toolTouched = true; el('toolWhy').textContent = ''; updateAttachHint(); });
+  thicknessSelect.addEventListener('change', () => { state.thicknessTouched = true; });
   cardProjectSelect.addEventListener('change', () => {
     el('projectWhy').textContent = '';
     loadAssemblies(cardProjectSelect.value);
