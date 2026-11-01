@@ -148,6 +148,67 @@
     cursor: pointer;
   }
   .btn:disabled { background: var(--line); color: var(--muted); cursor: default; }
+  .footer-row { display: flex; align-items: center; gap: 8px; }
+  .footer-row[hidden] { display: none; }
+  .footer-row .btn { flex: 1; }
+  .count { font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .btn.ghost { background: #ffffff; color: var(--text); border: 1px solid var(--line); flex: 0 0 34%; }
+
+  /* ---- Use Selection banner ---- */
+  .banner {
+    display: flex; align-items: center; gap: 8px;
+    background: #ecfccb; border: 1px solid #a3e635; border-radius: 8px;
+    padding: 6px 6px 6px 10px; margin-bottom: 10px;
+    font-size: 12px; font-weight: 500; color: #1a2e05;
+  }
+  .banner[hidden] { display: none; }
+  .banner span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .banner button {
+    font-family: var(--heading); font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
+    background: var(--accent); color: var(--accent-ink); border: none; border-radius: 6px;
+    padding: 5px 9px; cursor: pointer; white-space: nowrap;
+  }
+
+  /* ---- Parts checklist ---- */
+  #listScreen .field { margin-bottom: 12px; }
+  .sublabel { font-weight: 500; letter-spacing: 0.04em; text-transform: none; }
+  .list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+  .list-tools { display: flex; gap: 4px; }
+  .mini {
+    font-family: var(--heading); font-weight: 700; font-size: 11px; letter-spacing: 0.06em;
+    color: var(--text); background: #ffffff; border: 1px solid var(--line); border-radius: 6px;
+    padding: 3px 7px; cursor: pointer;
+  }
+  .mini:hover { border-color: #a1a1aa; }
+  .part-list { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .part-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 10px; border-bottom: 1px solid var(--line); cursor: pointer;
+    font-family: inherit; text-transform: none; letter-spacing: normal; color: var(--text);
+  }
+  .part-row:last-child { border-bottom: none; }
+  .part-row.on { background: #f4f4f5; }
+  .part-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex-shrink: 0; box-shadow: none; }
+  .part-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .part-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .part-sub { font-size: 11px; color: var(--muted); }
+  .part-sub.good { color: var(--good); }
+  .part-sub.bad { color: var(--bad); }
+  .part-list .chip-empty { display: block; padding: 10px; margin: 0; }
+  .tag {
+    font-family: var(--heading); font-weight: 700; font-size: 10.5px; letter-spacing: 0.08em;
+    color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+  }
+  .tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  /* ---- One part at a time ---- */
+  .card-head { display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-family: var(--heading); font-weight: 700; font-size: 22px; letter-spacing: 0.03em; margin: 2px 0 8px; }
+  .badge {
+    font-family: var(--heading); font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
+    background: var(--accent); color: var(--accent-ink); border-radius: 999px; padding: 2px 9px;
+  }
+
   .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
   .hint.good { color: var(--good); font-weight: 500; }
   .hint.bad { color: var(--bad); }
@@ -205,96 +266,130 @@
   </nav>
   </div>
 
-  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span>
-    <button id="simulateBtn" class="link" type="button" style="margin-left:auto">Demo part</button></div>
+  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span></div>
 
-  <form id="partForm" class="card" autocomplete="off">
-    <div class="field full">
-      <label for="projectSelect">Project</label>
+  <!-- Shown when something is clicked in Onshape; nothing changes until
+       Use Selection is pressed. -->
+  <div id="selBanner" class="banner" hidden>
+    <span id="selText"></span>
+    <button id="useSelBtn" type="button">USE SELECTION</button>
+  </div>
+
+  <!-- ---- Screen 1: pick the project and tick parts ---- -->
+  <section id="listScreen">
+    <div class="field">
+      <label for="projectSelect">Project <span class="sublabel">(applies to all parts)</span></label>
       <select id="projectSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
     </div>
 
-    <div class="field">
-      <label for="nameInput">Name<span class="req">*</span></label>
-      <input id="nameInput" type="text" maxlength="255" />
+    <div class="list-head">
+      <label>Parts in this Part Studio</label>
+      <span class="list-tools">
+        <button id="refreshBtn" class="mini" type="button" title="Reload parts from Onshape">&#8635;</button>
+        <button id="allBtn" class="mini" type="button">ALL</button>
+        <button id="clearBtn" class="mini" type="button">CLEAR</button>
+      </span>
     </div>
-    <div class="field">
-      <label for="partNumberInput">Part Number</label>
-      <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
-    </div>
+    <div id="partList" class="part-list"><p class="chip-empty">Loading parts&hellip;</p></div>
+  </section>
 
-    <div class="field full">
-      <label for="statusSelect">Status<span class="req">*</span></label>
-      <!-- Filled from the statuses existing LUNA parts use (the API has no
-           status list); defaults to "Designed". -->
-      <select id="statusSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+  <!-- ---- Screen 2: one part at a time ---- -->
+  <section id="cardScreen" hidden>
+    <div class="card-head">
+      <button id="backBtn" class="link" type="button">&larr; Parts</button>
+      <span id="cardCount" class="badge"></span>
     </div>
+    <h2 id="cardTitle" class="card-title"></h2>
 
-    <div class="field full">
-      <label for="toolSelect">Machine</label>
-      <select id="toolSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
-    </div>
+    <form id="partForm" class="card" autocomplete="off">
+      <div class="field">
+        <label for="nameInput">Name<span class="req">*</span></label>
+        <input id="nameInput" type="text" maxlength="255" />
+      </div>
+      <div class="field">
+        <label for="partNumberInput">Part Number</label>
+        <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
+      </div>
 
-    <div class="field full">
-      <label for="materialInput">Material</label>
-      <input id="materialInput" type="text" maxlength="255" />
-    </div>
+      <div class="field full">
+        <label for="statusSelect">Status<span class="req">*</span></label>
+        <!-- Filled from the statuses existing LUNA parts use (the API has no
+             status list); defaults to "Designed". -->
+        <select id="statusSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+      </div>
 
-    <div class="field full">
-      <label for="thicknessSelect">Thickness</label>
-      <select id="thicknessSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
-    </div>
+      <div class="field full">
+        <label for="toolSelect">Machine</label>
+        <select id="toolSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+      </div>
 
-    <div class="field full">
-      <label for="typeSelect">Type<span class="req">*</span></label>
-      <select id="typeSelect" class="chips">
-        <option value="part">Part</option>
-        <option value="assembly">Assembly</option>
-        <option value="purchased">Purchased</option>
-      </select>
-    </div>
+      <div class="field full">
+        <label for="materialInput">Material</label>
+        <input id="materialInput" type="text" maxlength="255" />
+      </div>
 
-    <div class="field full">
-      <label for="prioritySelect">Priority</label>
-      <select id="prioritySelect" class="chips">
-        <option value="0">Low</option>
-        <option value="1" selected>Normal</option>
-        <option value="2">High</option>
-      </select>
-    </div>
+      <div class="field full">
+        <label for="thicknessSelect">Thickness</label>
+        <select id="thicknessSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+      </div>
 
-    <div class="field">
-      <label for="quantityInput">Quantity<span class="req">*</span></label>
-      <input id="quantityInput" type="number" min="0" step="1" value="1" />
-    </div>
-    <div class="field">
-      <label for="leadTimeInput">Lead Time (Days)</label>
-      <input id="leadTimeInput" type="number" min="0" step="1" />
-    </div>
+      <div class="field full">
+        <label for="typeSelect">Type<span class="req">*</span></label>
+        <select id="typeSelect" class="chips">
+          <option value="part">Part</option>
+          <option value="assembly">Assembly</option>
+          <option value="purchased">Purchased</option>
+        </select>
+      </div>
 
-    <div class="field">
-      <label for="cutLengthInput">Cut Length</label>
-      <input id="cutLengthInput" type="number" min="0" step="any" />
-    </div>
-    <div class="field">
-      <label for="parentSelect">Parent Assembly</label>
-      <select id="parentSelect" disabled><option value="">None</option></select>
-    </div>
+      <div class="field full">
+        <label for="prioritySelect">Priority</label>
+        <select id="prioritySelect" class="chips">
+          <option value="0">Low</option>
+          <option value="1" selected>Normal</option>
+          <option value="2">High</option>
+        </select>
+      </div>
 
-    <div class="field full">
-      <label for="drawingSelect">Drawing</label>
-      <!-- Picked automatically when a part is clicked (e.g. part E05 ->
-           "E05 Drawing 1"); exported to PDF and attached on Create Part,
-           along with a DXF of the clicked face. -->
-      <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
-      <p id="attachHint" class="hint left">Click a part to attach its DXF and drawing.</p>
-    </div>
+      <div class="field">
+        <label for="quantityInput">Quantity<span class="req">*</span></label>
+        <input id="quantityInput" type="number" min="0" step="1" value="1" />
+      </div>
+      <div class="field">
+        <label for="leadTimeInput">Lead Time (Days)</label>
+        <input id="leadTimeInput" type="number" min="0" step="1" />
+      </div>
 
-    <div class="field full">
-      <label for="descriptionInput">Description</label>
-      <textarea id="descriptionInput" rows="2"></textarea>
-    </div>
-  </form>
+      <div class="field">
+        <label for="cutLengthInput">Cut Length</label>
+        <input id="cutLengthInput" type="number" min="0" step="any" />
+      </div>
+      <div class="field">
+        <label for="parentSelect">Parent Assembly</label>
+        <select id="parentSelect" disabled><option value="">None</option></select>
+      </div>
+
+      <div class="field full">
+        <label for="drawingSelect">Drawing</label>
+        <!-- Picked automatically from the part name (e.g. part E05 ->
+             "E05 Drawing 1"); exported to PDF and attached on Submit, along
+             with a DXF of the part's flat face. -->
+        <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
+        <p id="attachHint" class="hint left"></p>
+      </div>
+
+      <div class="field full">
+        <label for="descriptionInput">Description</label>
+        <textarea id="descriptionInput" rows="2"></textarea>
+      </div>
+    </form>
+  </section>
+
+  <!-- ---- Screen 3: what happened ---- -->
+  <section id="doneScreen" hidden>
+    <h2 class="card-title">Done</h2>
+    <div id="doneList" class="part-list"></div>
+  </section>
 
   <details>
     <summary>Sync log</summary>
@@ -304,23 +399,38 @@
 </div>
 
 <div class="footer">
-  <p id="createResult" class="hint">Creates the part in LUNA Parts.</p>
-  <button id="createBtn" class="btn" type="button" disabled>CREATE PART &rarr;</button>
+  <p id="footerHint" class="hint"></p>
+  <div id="listFooter" class="footer-row">
+    <span id="checkedCount" class="count">0 parts selected</span>
+    <button id="startBtn" class="btn" type="button" disabled>CREATE PARTS &rarr;</button>
+  </div>
+  <div id="cardFooter" class="footer-row" hidden>
+    <button id="skipBtn" class="btn ghost" type="button">SKIP</button>
+    <button id="submitBtn" class="btn" type="button">&#10003; SUBMIT</button>
+  </div>
+  <div id="doneFooter" class="footer-row" hidden>
+    <button id="againBtn" class="btn" type="button">BACK TO PARTS</button>
+  </div>
 </div>
 
 <script>
 (function () {
-  // --------------------------------------------------------------------
-  // MOCK DATA — stands in for a real Onshape part selection until the
-  // panel reads parts from the Onshape API (the next functional step).
-  // --------------------------------------------------------------------
-  const MOCK_PARTS = [
-    { name: 'Bracket_04',     material: '6061-T6 Aluminum',    thickness: '1/8' },
-    { name: 'Gusset_Plate_A', material: '304 Stainless Steel', thickness: '3/16' },
-    { name: 'Mount_Left',     material: 'A36 Steel',           thickness: '1/4' },
-  ];
-
-  const state = { connected: false, context: null, mockIndex: -1, drawings: [] };
+  // The panel has three screens, like 6328's MFG Pipeline:
+  //   1. list:  pick the project and tick parts from the Part Studio
+  //   2. card:  one part at a time ("2 of 5"), Skip or Submit
+  //   3. done:  what was created, skipped or failed
+  // Submit creates the part in LUNA, then attaches its DXF and drawing PDF.
+  const state = {
+    context: null,
+    drawings: [],
+    parts: [],             // [{ partId, name, material }] from Onshape
+    checked: new Set(),    // partIds ticked on the list
+    faces: new Map(),      // partId -> { faceId, flatFace } from Use Selection
+    queue: [],             // partIds being stepped through
+    step: 0,
+    results: [],           // { name, outcome: 'created'|'skipped', detail, kind }
+    pendingSelection: null,
+  };
 
   const el = (id) => document.getElementById(id);
   const statusBox = el('status');
@@ -329,11 +439,10 @@
   const toolSelect = el('toolSelect');
   const thicknessSelect = el('thicknessSelect');
   const statusSelect = el('statusSelect');
-  const createBtn = el('createBtn');
-  const createResult = el('createResult');
   const parentSelect = el('parentSelect');
   const drawingSelect = el('drawingSelect');
   const attachHint = el('attachHint');
+  const footerHint = el('footerHint');
   const logWindow = el('logWindow');
 
   // ---- Chips ---------------------------------------------------------------
@@ -418,6 +527,35 @@
     select.disabled = items.length === 0;
   }
 
+  function showHint(message, kind = '') {
+    footerHint.className = `hint ${kind}`;
+    footerHint.textContent = message;
+  }
+
+  async function getJson(url, options = {}) {
+    const res = await fetch(url, { credentials: 'include', ...options });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(body.error || `Server returned ${res.status}`);
+      err.status = res.status;
+      err.body = body;
+      throw err;
+    }
+    return body;
+  }
+
+  // ---- Screens -------------------------------------------------------------
+  function showScreen(name) {
+    for (const s of ['list', 'card', 'done']) {
+      el(`${s}Screen`).hidden = s !== name;
+      el(`${s}Footer`).hidden = s !== name;
+    }
+    state.screen = name;
+    showHint('');
+    window.scrollTo(0, 0);
+    updateBanner();
+  }
+
   // ---- Load projects/tools/thicknesses from LUNA Parts (read-only) -------
   async function connect() {
     log('Loading lists from LUNA Parts&hellip;');
@@ -437,24 +575,23 @@
       fillSelect(toolSelect, body.tools, 'Select tool');
       fillSelect(thicknessSelect, body.thicknesses, 'Select thickness');
 
-      state.connected = true;
       setStatus('Connected to LUNA Parts', 'good');
       log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
       loadStatuses();
 
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
-      const session = await fetch('/api/session', { credentials: 'include' }).then((r) => r.json());
+      const session = await getJson('/api/session');
       state.context = session.context;
-      if (session.context) el('docInfo').textContent = `DOC ${session.context.documentId.slice(0, 6)}`;
-      log(session.context
-        ? `Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
-        : 'Not opened from Onshape (no document info).');
       if (session.context) {
+        el('docInfo').textContent = `DOC ${session.context.documentId.slice(0, 6)}`;
+        log(`Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`);
         restoreProject();
         loadDrawings();
         listenForSelections(session.context);
-        warmPartIndex();
+        loadParts();
       } else {
+        log('Not opened from Onshape (no document info).');
+        el('partList').innerHTML = '<p class="chip-empty">Open this panel from inside an Onshape Part Studio to see its parts.</p>';
         fillSelect(drawingSelect, [], 'Only available inside Onshape');
       }
     } catch (err) {
@@ -464,6 +601,7 @@
       }
       log(err.message, 'error');
     }
+    updateListFooter();
   }
 
   // ---- Parent Assembly depends on the chosen project ---------------------
@@ -472,18 +610,84 @@
     if (!projectId) return;
 
     try {
-      const res = await fetch(`/api/luna/assemblies?project_id=${encodeURIComponent(projectId)}`, { credentials: 'include' });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
-      fillSelect(parentSelect, body.assemblies, 'None',
-        (a) => `${a.partNumber} ${a.name}`);
+      const body = await getJson(`/api/luna/assemblies?project_id=${encodeURIComponent(projectId)}`);
+      fillSelect(parentSelect, body.assemblies, 'None', (a) => `${a.partNumber} ${a.name}`);
       parentSelect.disabled = false;
     } catch (err) {
       log(err.message, 'error');
     }
   }
 
-  // ---- Real Onshape selections ------------------------------------------
+  // ---- Parts checklist -----------------------------------------------------
+  async function loadParts(refresh = false) {
+    const started = Date.now();
+    el('partList').innerHTML = '<p class="chip-empty">Loading parts&hellip;</p>';
+    try {
+      const body = await getJson(`/api/onshape/parts${refresh ? '?refresh=1' : ''}`);
+      state.parts = body.parts;
+      // Forget ticks for parts that no longer exist.
+      const ids = new Set(state.parts.map((p) => p.partId));
+      for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
+      renderPartList();
+      log(`${body.parts.length} parts loaded from this Part Studio in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+    } catch (err) {
+      el('partList').innerHTML = '<p class="chip-empty">Couldn’t load parts.</p>';
+      log(err.message, 'error');
+    }
+  }
+
+  function renderPartList() {
+    const list = el('partList');
+    list.innerHTML = '';
+    if (!state.parts.length) {
+      list.innerHTML = '<p class="chip-empty">No parts in this Part Studio.</p>';
+    }
+    for (const part of state.parts) {
+      const row = document.createElement('label');
+      row.className = state.checked.has(part.partId) ? 'part-row on' : 'part-row';
+      row.dataset.partId = part.partId;
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = state.checked.has(part.partId);
+      box.addEventListener('change', () => {
+        if (box.checked) state.checked.add(part.partId);
+        else state.checked.delete(part.partId);
+        row.classList.toggle('on', box.checked);
+        updateListFooter();
+      });
+
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = part.name;
+      const sub = document.createElement('span');
+      sub.className = 'part-sub';
+      sub.textContent = part.material || 'No material';
+      text.append(name, sub);
+
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = state.faces.has(part.partId) ? 'FACE' : 'PART';
+      tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected' : '';
+
+      row.append(box, text, tag);
+      list.appendChild(row);
+    }
+    updateListFooter();
+  }
+
+  function updateListFooter() {
+    const n = state.checked.size;
+    el('checkedCount').textContent = `${n} part${n === 1 ? '' : 's'} selected`;
+    el('startBtn').disabled = n === 0 || !projectSelect.value || !statusSelect.value;
+    if (state.screen === 'list') {
+      showHint(n && !projectSelect.value ? 'Pick a project first.' : '');
+    }
+  }
+
+  // ---- Onshape selections -> "Use Selection" banner ------------------------
   // Onshape tells an embedded panel what the user clicked via postMessage,
   // but only after the panel introduces itself with 'applicationInit'.
   // A click on a face/edge/vertex in the 3D view arrives as that entity's
@@ -499,10 +703,10 @@
       const selections = event.data.selections || [];
       const picked = selections.find((s) => s.selectionId);
       if (picked) {
-        loadSelectedPart(picked);
-      } else if (selections.length) {
-        // Logged so a screenshot of the Sync log shows what Onshape sent.
-        log(`Selection without an ID: ${JSON.stringify(selections[0]).slice(0, 120)}`, 'error');
+        lookUpSelection(picked);
+      } else if (!selections.length) {
+        state.pendingSelection = null;
+        updateBanner();
       }
     });
 
@@ -515,96 +719,135 @@
     log('Listening for part selections in Onshape.');
   }
 
-  // Loads the Part Studio's part data on the server up front, so the first
-  // click doesn't wait for the (large) download.
-  async function warmPartIndex() {
-    const started = Date.now();
-    try {
-      const res = await fetch('/api/onshape/warm', { method: 'POST', credentials: 'include' });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
-      log(`Ready: ${body.parts} parts loaded from this Part Studio in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
-    } catch (err) {
-      log(err.message, 'error');
-    }
-  }
-
-  async function loadSelectedPart(selection) {
+  async function lookUpSelection(selection) {
     // Clicks can arrive faster than lookups finish; only the latest one wins.
     const lookup = ++lookupCounter;
     log(`Selected ${(selection.entityType || 'entity').toLowerCase()} ${selection.selectionId}&hellip;`);
-    setStatus('Loading part\u2026', 'pending');
-
     try {
-      const res = await fetch(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selection.selectionId)}`, { credentials: 'include' });
-      const body = await res.json();
+      const body = await getJson(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selection.selectionId)}`);
       if (lookup !== lookupCounter) return;
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
 
-      // Another face of the same part keeps whatever was typed; a different
-      // part starts from a clean form so e.g. quantity doesn't carry over.
-      if (body.partId !== state.partId) {
-        resetPartFields();
-        state.faceId = null;
-        state.flatFace = null;
+      // While stepping through parts, a click on the current part's face
+      // just picks that face for its DXF.
+      if (state.screen === 'card' && body.partId === currentPartId() && body.faceId) {
+        state.faces.set(body.partId, { faceId: body.faceId, flatFace: body.flatFace });
+        updateAttachHint();
+        log(`Face picked for ${body.name}'s DXF.`, 'success');
+        return;
       }
-      state.partId = body.partId;
-      state.partName = body.name;
-      // An edge or vertex click keeps the face picked earlier for the DXF.
-      if (body.faceId) {
-        state.faceId = body.faceId;
-        state.flatFace = body.flatFace;
-      }
-
-      // The Onshape part name is the team's part number (e.g. "E05"). The
-      // LUNA "Name" is a separate description the user types.
-      el('partNumberInput').value = body.name;
-      el('materialInput').value = body.material || '';
-      pickDrawingFor(body.name);
-      updateAttachHint();
-      log(`Part loaded: ${body.name} (via ${body.via})`, 'success');
+      state.pendingSelection = body;
+      updateBanner();
     } catch (err) {
       if (lookup === lookupCounter) log(err.message, 'error');
-    } finally {
-      if (lookup === lookupCounter) setStatus('Connected to LUNA Parts', 'good');
     }
   }
 
-  // Everything except Project, which stays put across parts.
+  function updateBanner() {
+    const sel = state.pendingSelection;
+    const show = Boolean(sel) && state.screen === 'list';
+    el('selBanner').hidden = !show;
+    if (show) {
+      const already = state.checked.has(sel.partId);
+      el('selText').textContent = already ? `${sel.name} is ticked` : `${sel.name} selected in Onshape`;
+      el('useSelBtn').hidden = already && !sel.faceId;
+    }
+  }
+
+  function useSelection() {
+    const sel = state.pendingSelection;
+    if (!sel) return;
+    state.checked.add(sel.partId);
+    if (sel.faceId) state.faces.set(sel.partId, { faceId: sel.faceId, flatFace: sel.flatFace });
+    state.pendingSelection = null;
+    renderPartList();
+    updateBanner();
+    const row = document.querySelector(`.part-row[data-part-id="${CSS.escape(sel.partId)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+    log(`Ticked ${sel.name}${sel.faceId ? ' (with the clicked face for its DXF)' : ''}.`, 'success');
+  }
+
+  // ---- Stepping through the ticked parts -----------------------------------
+  function currentPartId() {
+    return state.queue[state.step];
+  }
+
+  function currentPart() {
+    return state.parts.find((p) => p.partId === currentPartId());
+  }
+
+  function startCards() {
+    // Keep the checklist's order.
+    state.queue = state.parts.map((p) => p.partId).filter((id) => state.checked.has(id));
+    state.step = 0;
+    state.results = [];
+    if (!state.queue.length) return;
+    showScreen('card');
+    loadCard();
+  }
+
+  function loadCard() {
+    const part = currentPart();
+    resetPartFields();
+    el('cardTitle').textContent = part.name;
+    el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
+    // The Onshape part name is the team's part number (e.g. "E05"). The
+    // LUNA "Name" is a separate description the user types.
+    el('partNumberInput').value = part.name;
+    el('materialInput').value = part.material || '';
+    pickDrawingFor(part.name);
+    updateAttachHint();
+    el('nameInput').focus();
+  }
+
+  function nextCard() {
+    state.step += 1;
+    if (state.step < state.queue.length) {
+      loadCard();
+      window.scrollTo(0, 0);
+    } else {
+      showDone();
+    }
+  }
+
+  function skipCard() {
+    state.results.push({ name: currentPart().name, outcome: 'skipped', detail: 'Skipped', kind: '' });
+    log(`Skipped ${currentPart().name}.`);
+    nextCard();
+  }
+
+  // Everything except Project, which applies to all parts.
   function resetPartFields() {
     el('partForm').reset();
-    projectSelect.value = state.projectId || '';
     statusSelect.value = state.defaultStatusId || '';
-    showCreateResult('Creates the part in LUNA Parts.');
     parentSelect.value = '';
     drawingSelect.value = '';
+    showHint('');
   }
 
   // ---- Statuses ------------------------------------------------------------
   async function loadStatuses() {
     try {
-      const res = await fetch('/api/luna/statuses', { credentials: 'include' });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
-
+      const body = await getJson('/api/luna/statuses');
       fillSelect(statusSelect, body.statuses, 'Select status');
       const designed = body.statuses.find((s) => /^designed/i.test(s.name));
       state.defaultStatusId = designed ? String(designed.id) : '';
       statusSelect.value = state.defaultStatusId;
-      createBtn.disabled = false;
     } catch (err) {
       fillSelect(statusSelect, [], 'Unavailable');
       log(err.message, 'error');
     }
+    updateListFooter();
   }
 
-  // ---- Create Part ---------------------------------------------------------
-  function showCreateResult(message, kind = '') {
-    createResult.className = `hint ${kind}`;
-    createResult.textContent = message;
+  // ---- Submit: create the part, then attach files --------------------------
+  function setBusy(busy, label) {
+    el('submitBtn').disabled = busy;
+    el('skipBtn').disabled = busy;
+    el('backBtn').disabled = busy;
+    el('submitBtn').textContent = busy ? label : '✓ SUBMIT';
   }
 
-  async function createPart() {
+  async function submitCard() {
     const value = (id) => el(id).value.trim();
     const part = {
       projectId: projectSelect.value,
@@ -630,90 +873,117 @@
       [part.quantity === '', 'Quantity'],
     ].filter(([isMissing]) => isMissing).map(([, label]) => label);
     if (missing.length) {
-      showCreateResult(`Fill in: ${missing.join(', ')}`, 'bad');
+      showHint(`Fill in: ${missing.join(', ')}`, 'bad');
       return;
     }
 
-    createBtn.disabled = true;
-    createBtn.textContent = 'CREATING\u2026';
+    const onshapePart = currentPart();
+    setBusy(true, 'CREATING…');
     try {
-      const res = await fetch('/api/luna/parts', {
+      const created = await getJson('/api/luna/parts', {
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(part),
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+      log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      showCreateResult(`\u2713 Created ${body.partNumber} in LUNA Parts`, 'good');
-      log(`Created ${body.partNumber} "${body.name}" in LUNA Parts (id ${body.id}).`, 'success');
-      if (state.partId && body.id) await attachFiles(body);
+      setBusy(true, 'ATTACHING FILES…');
+      showHint(`✓ Created ${created.partNumber}. Attaching DXF${drawingSelect.value ? ' and drawing PDF' : ''}…`, 'good');
+      const files = await attachFiles(created, onshapePart);
+      state.results.push({
+        name: created.partNumber || onshapePart.name,
+        outcome: 'created',
+        detail: files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`,
+        kind: files.ok ? 'good' : 'bad',
+      });
+      // Created parts drop off the checklist so they aren't sent twice.
+      state.checked.delete(onshapePart.partId);
+      nextCard();
     } catch (err) {
-      showCreateResult(err.message, 'bad');
+      // Stay on this part so it can be fixed and submitted again.
+      showHint(err.message, 'bad');
       log(err.message, 'error');
     } finally {
-      createBtn.disabled = false;
-      createBtn.textContent = 'CREATE PART \u2192';
+      setBusy(false);
     }
   }
 
-  // ---- Attachments (DXF of the clicked face + drawing PDF) ------------------
-  async function attachFiles(created) {
-    createBtn.textContent = 'ATTACHING FILES\u2026';
-    showCreateResult(`\u2713 Created ${created.partNumber}. Attaching DXF${drawingSelect.value ? ' and drawing PDF' : ''}\u2026`, 'good');
+  // DXF of the part's flat face + drawing PDF. Never throws: the part already
+  // exists, so a file problem is reported rather than blocking the next part.
+  async function attachFiles(created, onshapePart) {
+    const face = state.faces.get(onshapePart.partId) || {};
     try {
-      const res = await fetch(`/api/luna/parts/${encodeURIComponent(created.id)}/attachments`, {
+      const body = await getJson(`/api/luna/parts/${encodeURIComponent(created.id)}/attachments`, {
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          partId: state.partId,
-          faceId: state.faceId,
+          partId: onshapePart.partId,
+          faceId: face.faceId || null,
           drawingId: drawingSelect.value,
-          partNumber: created.partNumber || state.partName,
+          partNumber: created.partNumber || onshapePart.name,
         }),
       });
-      const body = await res.json().catch(() => ({}));
       for (const note of body.notes || []) log(note, 'error');
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
-
-      const notes = (body.notes || []).length ? ` (${body.notes.join(' ')})` : '';
-      showCreateResult(`\u2713 Created ${created.partNumber} with ${body.attached.join(' + ')}${notes}`, 'good');
       log(`Attached ${body.attached.join(', ')} to ${created.partNumber}.`, 'success');
+      const notes = (body.notes || []).length ? ` (${body.notes.join(' ')})` : '';
+      return { ok: true, text: `${body.attached.join(' + ')}${notes}` };
     } catch (err) {
-      showCreateResult(`Created ${created.partNumber}, but the files weren't attached: ${err.message}`, 'bad');
+      for (const note of (err.body && err.body.notes) || []) log(note, 'error');
       log(err.message, 'error');
+      return { ok: false, text: `the files weren't attached: ${err.message}` };
     }
   }
 
-  // Says up front what Create Part will attach, so a missing drawing is
-  // obvious before the part is made.
+  // Says up front what Submit will attach, so a missing drawing is obvious
+  // before the part is made.
   function updateAttachHint() {
-    if (!state.partId) {
-      attachHint.className = 'hint left';
-      attachHint.textContent = 'Click a part to attach its DXF and drawing.';
-      return;
-    }
-    const dxf = state.faceId
-      ? (state.flatFace ? 'DXF of the clicked face' : 'DXF of the largest flat face (clicked face isn\u2019t flat)')
+    const part = currentPart();
+    if (!part) return;
+    const face = state.faces.get(part.partId);
+    const dxf = face
+      ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
       : 'DXF of the largest flat face';
     if (drawingSelect.value) {
       attachHint.className = 'hint left';
       attachHint.textContent = `Will attach: ${dxf} + drawing PDF.`;
     } else {
       attachHint.className = 'hint left bad';
-      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(state.partName));
-      attachHint.textContent = `\u26a0 ${matched ? 'No drawing chosen' : `No drawing found for ${state.partName}`}. Only the ${dxf} will be attached.`;
+      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(part.name));
+      attachHint.textContent = `⚠ ${matched ? 'No drawing chosen' : `No drawing found for ${part.name}`}. Only the ${dxf} will be attached.`;
     }
+  }
+
+  // ---- Summary -------------------------------------------------------------
+  function showDone() {
+    const list = el('doneList');
+    list.innerHTML = '';
+    for (const r of state.results) {
+      const row = document.createElement('div');
+      row.className = 'part-row';
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = r.name;
+      const sub = document.createElement('span');
+      sub.className = `part-sub ${r.kind}`;
+      sub.textContent = r.detail;
+      text.append(name, sub);
+      const tag = document.createElement('span');
+      tag.className = r.outcome === 'created' ? 'tag on' : 'tag';
+      tag.textContent = r.outcome === 'created' ? 'SENT' : 'SKIPPED';
+      row.append(text, tag);
+      list.appendChild(row);
+    }
+    const sent = state.results.filter((r) => r.outcome === 'created').length;
+    showScreen('done');
+    showHint(`${sent} of ${state.results.length} part${state.results.length === 1 ? '' : 's'} sent to LUNA Parts.`, sent ? 'good' : '');
   }
 
   // ---- Drawing picker ------------------------------------------------------
   async function loadDrawings() {
     try {
-      const res = await fetch('/api/onshape/drawings', { credentials: 'include' });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+      const body = await getJson('/api/onshape/drawings');
       state.drawings = body.drawings;
       fillSelect(drawingSelect, body.drawings, body.drawings.length ? 'No drawing' : 'No drawings in this document');
     } catch (err) {
@@ -737,13 +1007,12 @@
 
   // ---- Remember the project per Onshape document --------------------------
   // Stored in this browser only; it just saves re-picking the project every
-  // time the panel opens. Changing the dropdown updates it.
+  // time the panel opens. Changing the project updates it.
   function projectKey() {
     return state.context ? `lunaProject:${state.context.documentId}` : null;
   }
 
   function rememberProject(projectId) {
-    state.projectId = projectId;
     const key = projectKey();
     if (!key) return;
     try {
@@ -758,36 +1027,40 @@
     try { saved = key && localStorage.getItem(key); } catch (err) { /* storage blocked */ }
     if (saved && [...projectSelect.options].some((o) => o.value === saved)) {
       projectSelect.value = saved;
-      state.projectId = saved;
       loadAssemblies(saved);
       log(`Project remembered for this document: ${projectSelect.selectedOptions[0].textContent}`);
     }
   }
 
-  // ---- Simulated Onshape part selection ----------------------------------
-  function fillDemoPart() {
-    state.mockIndex = (state.mockIndex + 1) % MOCK_PARTS.length;
-    const part = MOCK_PARTS[state.mockIndex];
-
-    resetPartFields();
-    el('partNumberInput').value = part.name;
-    el('materialInput').value = part.material;
-    pickDrawingFor(part.name);
-    // Match the thickness to LUNA's list by name where one lines up.
-    const match = [...thicknessSelect.options].find((o) => o.value && o.textContent.includes(part.thickness));
-    thicknessSelect.value = match ? match.value : '';
-
-    log(`Demo part filled: ${part.name}`);
-  }
-
   projectSelect.addEventListener('change', () => {
     rememberProject(projectSelect.value);
     loadAssemblies(projectSelect.value);
+    updateListFooter();
   });
-  el('simulateBtn').addEventListener('click', fillDemoPart);
-  createBtn.addEventListener('click', createPart);
+  el('useSelBtn').addEventListener('click', useSelection);
+  el('refreshBtn').addEventListener('click', () => loadParts(true));
+  el('allBtn').addEventListener('click', () => {
+    for (const p of state.parts) state.checked.add(p.partId);
+    renderPartList();
+  });
+  el('clearBtn').addEventListener('click', () => {
+    state.checked.clear();
+    renderPartList();
+  });
+  el('startBtn').addEventListener('click', startCards);
+  el('skipBtn').addEventListener('click', skipCard);
+  el('submitBtn').addEventListener('click', submitCard);
+  el('backBtn').addEventListener('click', () => {
+    showScreen('list');
+    renderPartList();
+  });
+  el('againBtn').addEventListener('click', () => {
+    showScreen('list');
+    renderPartList();
+  });
   drawingSelect.addEventListener('change', updateAttachHint);
 
+  showScreen('list');
   connect();
 })();
 </script>
