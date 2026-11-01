@@ -1267,7 +1267,11 @@
   function highlightPart(part) {
     clearHighlight();
     const selections = state.kind === 'assembly'
-      ? (part.occurrences || []).map((path) => ({ selectionType: 'ENTITY', selectionId: path.join('/'), entityType: 'BODY' }))
+      // Same shape Onshape sends when a part is clicked in an assembly:
+      // { selectionType: 'OCCURRENCE', selectionId, occurrencePath }.
+      ? (part.occurrences || []).map((path) => ({
+        selectionType: 'OCCURRENCE', selectionId: path[path.length - 1], occurrencePath: path,
+      }))
       : [{ selectionType: 'ENTITY', selectionId: part.partId, entityType: 'BODY' }];
     if (!selections.length) return;
     highlightCounter += 1;
