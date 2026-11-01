@@ -258,6 +258,27 @@ app.post('/api/onshape/warm', async (req, res) => {
   }
 });
 
+// Every part in the Part Studio, for the panel's checklist.
+app.get('/api/onshape/parts', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+
+  try {
+    const index = await getPartIndex(req, dwe, { refresh: req.query.refresh === '1' });
+    const parts = [...index.partsById.values()]
+      .map((p) => ({
+        partId: p.partId,
+        name: p.name,
+        material: p.material ? p.material.displayName : null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    res.json({ parts });
+  } catch (err) {
+    console.error('Onshape parts list failed:', err);
+    res.status(502).json({ error: onshapeErrorMessage(err) });
+  }
+});
+
 app.get('/api/onshape/selected-part', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
