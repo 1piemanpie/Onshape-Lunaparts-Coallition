@@ -1234,7 +1234,11 @@
 
   function applyShape(part) {
     if (!state.toolTouched) applyToolGuess(part);
-    if (part.thickness && !state.thicknessTouched) {
+    // Shafts and spacers don't have a stock thickness (Micah), even a thin
+    // spacer whose size looks plate-like.
+    const lathePart = part.group === 'stock' || /shaft|spacer|bushing|standoff/i.test(part.name)
+      || /lathe/i.test((toolSelect.selectedOptions[0] || {}).textContent || '');
+    if (part.thickness && !state.thicknessTouched && !lathePart) {
       const options = [...thicknessSelect.options]
         .map((o) => ({ value: o.value, inches: inchesFromLabel(o.textContent) }))
         .filter((o) => o.value && o.inches);
