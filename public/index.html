@@ -204,6 +204,10 @@
   /* ---- One part at a time ---- */
   .card-head { display: flex; align-items: center; justify-content: space-between; }
   .card-title { font-family: var(--heading); font-weight: 700; font-size: 22px; letter-spacing: 0.03em; margin: 2px 0 8px; }
+  .upload-status { font-size: 11px; color: var(--muted); margin: 4px 0 0; min-height: 0; }
+  .upload-status:empty { display: none; }
+  .upload-status.bad { color: var(--bad); }
+  .tag.bad { color: var(--bad); border-color: var(--bad); }
   .badge {
     font-family: var(--heading); font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
     background: var(--accent); color: var(--accent-ink); border-radius: 999px; padding: 2px 9px;
@@ -299,6 +303,7 @@
       <button id="backBtn" class="link" type="button">&larr; Parts</button>
       <span id="cardCount" class="badge"></span>
     </div>
+    <p id="uploadStatus" class="upload-status"></p>
     <h2 id="cardTitle" class="card-title"></h2>
 
     <form id="partForm" class="card" autocomplete="off">
@@ -372,7 +377,7 @@
       <div class="field full">
         <label for="drawingSelect">Drawing</label>
         <!-- Picked automatically from the part name (e.g. part E05 ->
-             "E05 Drawing 1"); exported to PDF and attached on Submit, along
+             "E05 Drawing 1"); exported to PDF and attached on Upload, along
              with a DXF of the part's flat face. -->
         <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
         <p id="attachHint" class="hint left"></p>
@@ -387,7 +392,7 @@
 
   <!-- ---- Screen 3: what happened ---- -->
   <section id="doneScreen" hidden>
-    <h2 class="card-title">Done</h2>
+    <h2 id="doneTitle" class="card-title">Done</h2>
     <div id="doneList" class="part-list"></div>
   </section>
 
@@ -406,7 +411,7 @@
   </div>
   <div id="cardFooter" class="footer-row" hidden>
     <button id="skipBtn" class="btn ghost" type="button">SKIP</button>
-    <button id="submitBtn" class="btn" type="button">&#10003; SUBMIT</button>
+    <button id="submitBtn" class="btn" type="button">&#8593; UPLOAD</button>
   </div>
   <div id="doneFooter" class="footer-row" hidden>
     <button id="againBtn" class="btn" type="button">BACK TO PARTS</button>
@@ -417,9 +422,10 @@
 (function () {
   // The panel has three screens, like 6328's MFG Pipeline:
   //   1. list:  pick the project and tick parts from the Part Studio
-  //   2. card:  one part at a time ("2 of 5"), Skip or Submit
+  //   2. card:  one part at a time ("2 of 5"), Skip or Upload
   //   3. done:  what was created, skipped or failed
-  // Submit creates the part in LUNA, then attaches its DXF and drawing PDF.
+  // Upload queues the part; it is created in LUNA and its DXF and drawing
+  // PDF attached in the background while the next part is filled in.
   const state = {
     context: null,
     drawings: [],
@@ -779,7 +785,8 @@
     // Keep the checklist's order.
     state.queue = state.parts.map((p) => p.partId).filter((id) => state.checked.has(id));
     state.step = 0;
-    state.results = [];
+    // Uploads still running from the last batch stay on the summary.
+    state.results = state.results.filter((r) => r.outcome === 'pending');
     if (!state.queue.length) return;
     showScreen('card');
     loadCard();
@@ -790,6 +797,7 @@
     resetPartFields();
     el('cardTitle').textContent = part.name;
     el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
+    renderUploadProgress();
     // The Onshape part name is the team's part number (e.g. "E05"). The
     // LUNA "Name" is a separate description the user types.
     el('partNumberInput').value = part.name;
@@ -839,15 +847,15 @@
     updateListFooter();
   }
 
-  // ---- Submit: create the part, then attach files --------------------------
-  function setBusy(busy, label) {
-    el('submitBtn').disabled = busy;
-    el('skipBtn').disabled = busy;
-    el('backBtn').disabled = busy;
-    el('submitBtn').textContent = busy ? label : '✓ SUBMIT';
-  }
+  // ---- Upload: queue the part and move straight on --------------------------
+  // Creating the part and exporting its DXF/PDF takes a while, so Upload only
+  // checks the form, then the work runs in the background (two parts at a
+  // time) while the next part is filled in. Results show up on the summary.
+  const MAX_PARALLEL_UPLOADS = 2;
+  const uploadQueue = [];
+  let activeUploads = 0;
 
-  async function submitCard() {
+  function uploadCard() {
     const value = (id) => el(id).value.trim();
     const part = {
       projectId: projectSelect.value,
@@ -878,49 +886,82 @@
     }
 
     const onshapePart = currentPart();
-    setBusy(true, 'CREATING…');
+    const face = state.faces.get(onshapePart.partId) || {};
+    const result = {
+      name: part.partNumber || onshapePart.name,
+      outcome: 'pending',
+      detail: 'Waiting to upload…',
+      kind: '',
+    };
+    state.results.push(result);
+    // Unticked now so it isn't picked again; put back if the upload fails.
+    state.checked.delete(onshapePart.partId);
+    uploadQueue.push({
+      part,
+      onshapePart,
+      faceId: face.faceId || null,
+      drawingId: drawingSelect.value,
+      result,
+    });
+    log(`Queued ${result.name} for upload.`);
+    pumpUploads();
+    nextCard();
+  }
+
+  function pumpUploads() {
+    while (activeUploads < MAX_PARALLEL_UPLOADS && uploadQueue.length) {
+      activeUploads += 1;
+      runUpload(uploadQueue.shift()).finally(() => {
+        activeUploads -= 1;
+        pumpUploads();
+      });
+    }
+    renderUploadProgress();
+  }
+
+  async function runUpload(job) {
+    const { part, onshapePart, result } = job;
     try {
+      result.detail = 'Creating…';
+      renderUploadProgress();
       const created = await getJson('/api/luna/parts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(part),
       });
+      result.name = created.partNumber || result.name;
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      setBusy(true, 'ATTACHING FILES…');
-      showHint(`✓ Created ${created.partNumber}. Attaching DXF${drawingSelect.value ? ' and drawing PDF' : ''}…`, 'good');
-      const files = await attachFiles(created, onshapePart);
-      state.results.push({
-        name: created.partNumber || onshapePart.name,
-        outcome: 'created',
-        detail: files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`,
-        kind: files.ok ? 'good' : 'bad',
-      });
-      // Created parts drop off the checklist so they aren't sent twice.
-      state.checked.delete(onshapePart.partId);
-      nextCard();
+      result.detail = `Attaching DXF${job.drawingId ? ' and drawing PDF' : ''}…`;
+      renderUploadProgress();
+      const files = await attachFiles(created, job);
+      result.outcome = 'created';
+      result.detail = files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`;
+      result.kind = files.ok ? 'good' : 'bad';
     } catch (err) {
-      // Stay on this part so it can be fixed and submitted again.
-      showHint(err.message, 'bad');
-      log(err.message, 'error');
-    } finally {
-      setBusy(false);
+      // Nothing was created, so the part goes back on the checklist to retry.
+      result.outcome = 'failed';
+      result.detail = err.message;
+      result.kind = 'bad';
+      state.checked.add(onshapePart.partId);
+      if (state.screen === 'list') renderPartList();
+      log(`${result.name}: ${err.message}`, 'error');
     }
+    renderUploadProgress();
   }
 
   // DXF of the part's flat face + drawing PDF. Never throws: the part already
-  // exists, so a file problem is reported rather than blocking the next part.
-  async function attachFiles(created, onshapePart) {
-    const face = state.faces.get(onshapePart.partId) || {};
+  // exists, so a file problem is reported rather than failing the upload.
+  async function attachFiles(created, job) {
     try {
       const body = await getJson(`/api/luna/parts/${encodeURIComponent(created.id)}/attachments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          partId: onshapePart.partId,
-          faceId: face.faceId || null,
-          drawingId: drawingSelect.value,
-          partNumber: created.partNumber || onshapePart.name,
+          partId: job.onshapePart.partId,
+          faceId: job.faceId,
+          drawingId: job.drawingId,
+          partNumber: created.partNumber || job.onshapePart.name,
         }),
       });
       for (const note of body.notes || []) log(note, 'error');
@@ -934,7 +975,25 @@
     }
   }
 
-  // Says up front what Submit will attach, so a missing drawing is obvious
+  function uploadCounts() {
+    const count = (outcome) => state.results.filter((r) => r.outcome === outcome).length;
+    return { pending: count('pending'), sent: count('created'), failed: count('failed'), skipped: count('skipped') };
+  }
+
+  // A one-line status on the part screens, and a live summary on the last one.
+  function renderUploadProgress() {
+    const c = uploadCounts();
+    const line = el('uploadStatus');
+    const parts = [];
+    if (c.pending) parts.push(`Uploading ${c.pending}…`);
+    if (c.sent) parts.push(`${c.sent} sent`);
+    if (c.failed) parts.push(`${c.failed} failed`);
+    line.textContent = parts.join(' · ');
+    line.className = c.failed ? 'upload-status bad' : 'upload-status';
+    if (state.screen === 'done') renderDone();
+  }
+
+  // Says up front what Upload will attach, so a missing drawing is obvious
   // before the part is made.
   function updateAttachHint() {
     const part = currentPart();
@@ -954,7 +1013,19 @@
   }
 
   // ---- Summary -------------------------------------------------------------
+  const OUTCOME_TAGS = {
+    created: ['SENT', 'tag on'],
+    pending: ['UPLOADING', 'tag'],
+    failed: ['FAILED', 'tag bad'],
+    skipped: ['SKIPPED', 'tag'],
+  };
+
   function showDone() {
+    showScreen('done');
+    renderDone();
+  }
+
+  function renderDone() {
     const list = el('doneList');
     list.innerHTML = '';
     for (const r of state.results) {
@@ -970,14 +1041,20 @@
       sub.textContent = r.detail;
       text.append(name, sub);
       const tag = document.createElement('span');
-      tag.className = r.outcome === 'created' ? 'tag on' : 'tag';
-      tag.textContent = r.outcome === 'created' ? 'SENT' : 'SKIPPED';
+      const [label, className] = OUTCOME_TAGS[r.outcome];
+      tag.className = className;
+      tag.textContent = label;
       row.append(text, tag);
       list.appendChild(row);
     }
-    const sent = state.results.filter((r) => r.outcome === 'created').length;
-    showScreen('done');
-    showHint(`${sent} of ${state.results.length} part${state.results.length === 1 ? '' : 's'} sent to LUNA Parts.`, sent ? 'good' : '');
+
+    const c = uploadCounts();
+    el('doneTitle').textContent = c.pending ? 'Uploading…' : 'Done';
+    const total = state.results.length;
+    let summary = `${c.sent} of ${total} part${total === 1 ? '' : 's'} sent to LUNA Parts`;
+    if (c.pending) summary += `, ${c.pending} still uploading`;
+    if (c.failed) summary += `. ${c.failed} failed and ${c.failed === 1 ? 'is' : 'are'} ticked again on the parts list`;
+    showHint(`${summary}.`, c.failed ? 'bad' : (c.sent ? 'good' : ''));
   }
 
   // ---- Drawing picker ------------------------------------------------------
@@ -1049,7 +1126,7 @@
   });
   el('startBtn').addEventListener('click', startCards);
   el('skipBtn').addEventListener('click', skipCard);
-  el('submitBtn').addEventListener('click', submitCard);
+  el('submitBtn').addEventListener('click', uploadCard);
   el('backBtn').addEventListener('click', () => {
     showScreen('list');
     renderPartList();
@@ -1059,6 +1136,10 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
+  // Closing the panel mid-upload would stop the uploads, so warn first.
+  window.addEventListener('beforeunload', (event) => {
+    if (uploadCounts().pending) event.preventDefault();
+  });
 
   showScreen('list');
   connect();
