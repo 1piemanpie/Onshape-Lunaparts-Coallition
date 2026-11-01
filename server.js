@@ -57,8 +57,9 @@ app.get('/oauth/login', (req, res) => {
   }
 
   // Already logged in with a token that hasn't expired: skip straight to the panel.
+  // ?force=1 logs in again, e.g. after the app was given edit permission.
   const tokens = req.session.onshapeTokens;
-  if (tokens && tokens.expiresAt > Date.now()) {
+  if (tokens && tokens.expiresAt > Date.now() && req.query.force !== '1') {
     return res.redirect('/');
   }
 
@@ -516,6 +517,98 @@ app.get('/api/onshape/selected-part', async (req, res) => {
   } catch (err) {
     console.error('Onshape selection lookup failed:', err);
     res.status(502).json({ error: onshapeErrorMessage(err) });
+  }
+});
+
+// ---- Part namer ------------------------------------------------------------
+// "Assign names": each part clicked in the Part Studio is renamed to the next
+// number in a series like 26O-E001. Renaming changes the document, so it
+// needs the app's "edit" (OAuth2Write) permission.
+const NAME_PREFIX = /^[A-Za-z0-9][A-Za-z0-9-]{0,15}$/;
+const PART_NAME = /^[\w .\-()#/]{1,80}$/;
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The next free number after the highest one already used, in this Part
+// Studio or (when a project is picked) in LUNA Parts.
+app.get('/api/onshape/next-number', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const prefix = String(req.query.prefix || '');
+  if (!NAME_PREFIX.test(prefix)) return res.status(400).json({ error: 'Use letters, numbers and dashes for the prefix, like 26O-E.' });
+  const projectId = Number(req.query.project_id);
+
+  const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\b`, 'i');
+  const numbers = [];
+  try {
+    const index = await getPartIndex(req, dwe, { refresh: true });
+    for (const part of index.partsById.values()) {
+      const m = String(part.name || '').match(pattern);
+      if (m) numbers.push(Number(m[1]));
+    }
+  } catch (err) {
+    console.error('Onshape parts list failed:', err);
+    return res.status(502).json({ error: onshapeErrorMessage(err) });
+  }
+  let checkedLuna = false;
+  if (Number.isInteger(projectId) && projectId > 0) {
+    try {
+      const parts = await lunaGetAll(`parts?project_id=${projectId}`);
+      for (const part of parts) {
+        const m = String(part.part_number || '').match(pattern);
+        if (m) numbers.push(Number(m[1]));
+      }
+      checkedLuna = true;
+    } catch (err) {
+      console.error('LUNA Parts lookup for next number failed:', err);
+    }
+  }
+  res.json({ next: (numbers.length ? Math.max(...numbers) : 0) + 1, checkedLuna });
+});
+
+app.post('/api/onshape/rename', express.json(), async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const partId = String((req.body && req.body.partId) || '');
+  const name = String((req.body && req.body.name) || '').trim();
+  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+  if (!PART_NAME.test(name)) return res.status(400).json({ error: 'That name has characters Onshape parts can\'t use here.' });
+
+  try {
+    if (await elementType(req) === 'ASSEMBLY') {
+      return res.status(409).json({ error: 'Name parts from their Part Studio, not the assembly.' });
+    }
+    const path = `/metadata/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}/p/${encodeURIComponent(partId)}`;
+    // Look up the Name property's ID rather than hard-coding it.
+    const meta = await onshapeFetch(req, path);
+    const nameProp = (meta.properties || []).find((p) => p.name === 'Name');
+    if (!nameProp) return res.status(502).json({ error: 'Onshape didn\'t list a Name property for this part.' });
+    await onshapeFetch(req, path, {
+      method: 'POST',
+      body: JSON.stringify({
+        jsonType: 'metadata-part',
+        partId,
+        properties: [{ propertyId: nameProp.propertyId, value: name }],
+      }),
+    });
+
+    // Keep the cached part list in step so the checklist shows the new name.
+    const index = await getPartIndex(req, dwe);
+    const cached = index.partsById.get(partId);
+    if (cached) cached.name = name;
+    res.json({ partId, name, oldName: nameProp.value });
+  } catch (err) {
+    console.error('Onshape rename failed:', err);
+    if (err.status === 403) {
+      return res.status(403).json({
+        error: 'The app can\'t edit Onshape yet. In the Onshape developer portal, give the app "write to your documents" permission, then click Reconnect to Onshape.',
+        needsWrite: true,
+      });
+    }
+    res.status(502).json({ error: err.status ? `Onshape couldn't rename the part (${err.status}).` : 'Could not reach Onshape.' });
   }
 });
 

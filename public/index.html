@@ -169,6 +169,32 @@
     padding: 5px 9px; cursor: pointer; white-space: nowrap;
   }
 
+  /* ---- Part namer: black bar, yellow text (yellow only ever on black) ---- */
+  .namer {
+    background: var(--accent); color: #ffffff; border-radius: 10px;
+    padding: 9px 10px; margin-bottom: 8px; font-size: 12px;
+  }
+  .namer[hidden] { display: none; }
+  .namer-title { font-family: var(--heading); font-weight: 700; letter-spacing: 0.08em; color: var(--accent-ink); font-size: 13px; }
+  .namer-row { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+  .namer input {
+    width: 84px; padding: 4px 6px; font-size: 13px; font-weight: 600;
+    background: #ffffff; color: #111111; border: 1px solid #ffffff; border-radius: 6px; box-shadow: none;
+  }
+  .namer-next { flex: 1; min-width: 0; font-weight: 600; }
+  .namer-next b { color: var(--accent-ink); font-size: 14px; }
+  .namer button {
+    font-family: var(--heading); font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
+    background: transparent; color: #ffffff; border: 1px solid #52525b; border-radius: 6px;
+    padding: 4px 8px; cursor: pointer;
+  }
+  .namer button.go { background: var(--accent-ink); color: #111111; border-color: var(--accent-ink); }
+  .namer button:disabled { opacity: 0.4; cursor: default; }
+  .namer-msg { margin-top: 6px; color: #d4d4d8; min-height: 0; }
+  .namer-msg:empty { display: none; }
+  .namer-msg.bad { color: #fca5a5; }
+  .namer-msg a { color: var(--accent-ink); }
+
   /* ---- Parts checklist ---- */
   #listScreen .field { margin-bottom: 12px; }
   .sublabel { font-weight: 500; letter-spacing: 0.04em; text-transform: none; }
@@ -180,6 +206,8 @@
     padding: 3px 7px; cursor: pointer;
   }
   .mini:hover { border-color: #a1a1aa; }
+  .mini.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .mini[hidden] { display: none; }
   .part-list { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .part-row {
     display: flex; align-items: center; gap: 9px;
@@ -312,10 +340,25 @@
     <div class="list-head">
       <label id="listLabel">Parts in this Part Studio</label>
       <span class="list-tools">
+        <button id="nameBtn" class="mini" type="button" title="Number parts by clicking them in Onshape">NAME</button>
         <button id="refreshBtn" class="mini" type="button" title="Reload parts from Onshape">&#8635;</button>
         <button id="allBtn" class="mini" type="button">ALL</button>
         <button id="clearBtn" class="mini" type="button">CLEAR</button>
       </span>
+    </div>
+    <!-- Assign names: each part clicked in Onshape gets the next number. -->
+    <div id="namer" class="namer" hidden>
+      <div class="namer-title">ASSIGN NAMES &middot; CLICK PARTS IN ONSHAPE</div>
+      <div class="namer-row">
+        <input id="namerPrefix" type="text" maxlength="16" value="26O-E" aria-label="Name prefix" spellcheck="false" />
+        <span class="namer-next">Next: <b id="namerNext">&hellip;</b></span>
+      </div>
+      <div class="namer-row">
+        <button id="namerUndo" type="button" disabled>UNDO</button>
+        <span style="flex:1"></span>
+        <button id="namerDone" class="go" type="button">DONE</button>
+      </div>
+      <div id="namerMsg" class="namer-msg"></div>
     </div>
     <div id="partList" class="part-list"><p class="chip-empty">Loading parts&hellip;</p></div>
   </section>
@@ -659,6 +702,9 @@
       state.parts = body.parts;
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
+      // Parts are named in their Part Studio, not in an assembly.
+      el('nameBtn').hidden = state.kind === 'assembly';
+      if (state.kind === 'assembly' && namer.active) namer.close();
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
@@ -747,6 +793,7 @@
   // ID; the server works out which part owns it.
   const ONSHAPE_ORIGIN = 'https://cad.onshape.com';
   let lookupCounter = 0;
+  let lastSelectionIds = new Set();
 
   function listenForSelections(context) {
     window.addEventListener('message', (event) => {
@@ -754,6 +801,15 @@
       if (event.data.messageName !== 'SELECTION') return;
 
       const selections = event.data.selections || [];
+      // Onshape sends the whole selection each time, so work out which
+      // entities were just added (for the namer, one part per click).
+      const ids = selections.map((s) => s.selectionId).filter(Boolean);
+      const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
+      lastSelectionIds = new Set(ids);
+      if (namer.active) {
+        for (const s of added) namer.enqueue(s.selectionId);
+        return;
+      }
       const picked = selections.find((s) => s.selectionId);
       if (picked) {
         lookUpSelection(picked);
@@ -820,6 +876,137 @@
     if (row) row.scrollIntoView({ block: 'nearest' });
     log(`Ticked ${sel.name}${sel.faceId ? ' (with the clicked face for its DXF)' : ''}.`, 'success');
   }
+
+  // ---- Part namer ----------------------------------------------------------
+  // Press NAME, set the prefix (26O-E), then click parts in Onshape: each
+  // new part clicked is renamed to the next number (26O-E001, 26O-E002...).
+  const namer = {
+    active: false,
+    next: null,
+    named: [],          // [{ partId, oldName, newName }] for Undo
+    chain: Promise.resolve(),
+    prefixKey() { return state.context ? `lunaPrefix:${state.context.documentId}` : 'lunaPrefix'; },
+    prefix() { return el('namerPrefix').value.trim().toUpperCase(); },
+    format(n) { return `${this.prefix()}${String(n).padStart(3, '0')}`; },
+    message(text, kind = '') {
+      const msg = el('namerMsg');
+      msg.className = `namer-msg ${kind}`;
+      msg.textContent = text;
+    },
+    render() {
+      el('namerNext').textContent = this.next ? this.format(this.next) : '…';
+      el('namerUndo').disabled = !this.named.length;
+    },
+    async open() {
+      this.active = true;
+      this.named = [];
+      try {
+        const saved = localStorage.getItem(this.prefixKey());
+        if (saved) el('namerPrefix').value = saved;
+      } catch (err) { /* storage blocked */ }
+      el('namer').hidden = false;
+      el('nameBtn').classList.add('on');
+      state.pendingSelection = null;
+      updateBanner();
+      this.message('Click each part in Onshape, in the order you want them numbered.');
+      await this.loadNext();
+    },
+    close() {
+      this.active = false;
+      el('namer').hidden = true;
+      el('nameBtn').classList.remove('on');
+      if (this.named.length) log(`Named ${this.named.length} part${this.named.length === 1 ? '' : 's'}.`, 'success');
+    },
+    async loadNext() {
+      const prefix = this.prefix();
+      this.next = null;
+      this.render();
+      if (!/^[A-Z0-9][A-Z0-9-]{0,15}$/.test(prefix)) {
+        this.message('Use letters, numbers and dashes for the prefix, like 26O-E.', 'bad');
+        return;
+      }
+      try {
+        const query = new URLSearchParams({ prefix });
+        if (projectSelect.value) query.set('project_id', projectSelect.value);
+        const body = await getJson(`/api/onshape/next-number?${query}`);
+        if (prefix !== this.prefix()) return; // typed again meanwhile
+        this.next = body.next;
+        try { localStorage.setItem(this.prefixKey(), prefix); } catch (err) { /* storage blocked */ }
+        this.render();
+      } catch (err) {
+        this.message(err.message, 'bad');
+      }
+    },
+    // Clicks are handled one at a time so the numbers stay in click order.
+    enqueue(selectionId) {
+      this.chain = this.chain.then(() => this.nameSelection(selectionId)).catch(() => {});
+    },
+    async nameSelection(selectionId) {
+      if (!this.active || !this.next) return;
+      let part;
+      try {
+        part = await getJson(`/api/onshape/selected-part?selectionId=${encodeURIComponent(selectionId)}`);
+      } catch (err) {
+        this.message(err.message, 'bad');
+        return;
+      }
+      if (this.named.some((n) => n.partId === part.partId)) return; // another face of a part already named
+      const newName = this.format(this.next);
+      if (part.name === newName) { this.next += 1; this.render(); return; }
+      await this.rename(part.partId, newName, part.name);
+    },
+    async rename(partId, newName, oldName, { undo = false } = {}) {
+      try {
+        await getJson('/api/onshape/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ partId, name: newName }),
+        });
+      } catch (err) {
+        const msg = el('namerMsg');
+        this.message(err.message, 'bad');
+        if (err.body && err.body.needsWrite && state.context) {
+          const c = state.context;
+          const link = document.createElement('a');
+          link.href = `/oauth/login?force=1&documentId=${c.documentId}&workspaceId=${c.workspaceId}&elementId=${c.elementId}`;
+          link.textContent = ' Reconnect to Onshape';
+          msg.appendChild(link);
+        }
+        return false;
+      }
+      const listed = state.parts.find((p) => p.partId === partId);
+      if (listed) listed.name = newName;
+      if (undo) {
+        this.next -= 1;
+        this.message(`Put back ${newName}.`);
+      } else {
+        this.named.push({ partId, oldName, newName });
+        this.next += 1;
+        this.message(`${oldName} \u2192 ${newName}`);
+        showToast(`\u2713 Named ${newName}`);
+      }
+      this.render();
+      renderPartList();
+      return true;
+    },
+    async undo() {
+      const last = this.named.pop();
+      if (!last) return;
+      this.render();
+      const ok = await this.rename(last.partId, last.oldName, last.newName, { undo: true });
+      if (!ok) this.named.push(last);
+      this.render();
+    },
+  };
+
+  let prefixTimer = null;
+  el('namerPrefix').addEventListener('input', () => {
+    clearTimeout(prefixTimer);
+    prefixTimer = setTimeout(() => namer.loadNext(), 400);
+  });
+  el('nameBtn').addEventListener('click', () => (namer.active ? namer.close() : namer.open()));
+  el('namerDone').addEventListener('click', () => namer.close());
+  el('namerUndo').addEventListener('click', () => { namer.chain = namer.chain.then(() => namer.undo()); });
 
   // ---- Stepping through the ticked parts -----------------------------------
   function currentPartId() {
@@ -1219,7 +1406,7 @@
     state.checked.clear();
     renderPartList();
   });
-  el('startBtn').addEventListener('click', startCards);
+  el('startBtn').addEventListener('click', () => { if (namer.active) namer.close(); startCards(); });
   el('skipBtn').addEventListener('click', skipCard);
   el('submitBtn').addEventListener('click', uploadCard);
   el('backBtn').addEventListener('click', () => {
