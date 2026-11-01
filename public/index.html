@@ -5,93 +5,149 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Parts Tracker Bridge</title>
 
-<!-- Same font LUNA Parts uses, so the panel reads as part of the tracker. -->
-<link rel="preconnect" href="https://fonts.bunny.net" />
-<link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet" />
+<!-- Condensed headings like a shop-floor board; LUNA Parts' Instrument Sans for fields. -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="icon" href="/icon.png" />
 
 <style>
-  /* Styled after LUNA Parts' own "Create Part" form, condensed to fit
-     Onshape's ~300px right panel: two fields per row where they're short. */
+  /* 6328-style layout (pill "chips" instead of dropdowns, sticky footer)
+     in Team 316 LUNATECS colors: black, white and the logo's yellow. The
+     yellow is only used on black, where it's easy to read. */
   :root {
+    --bg: #ffffff;
+    --card: #ffffff;
+    --field: #ffffff;
+    --line: #e4e4e7;
     --text: #1b1b18;
-    --label: #3f3f46;
     --muted: #71717a;
-    --border: #e4e4e7;
-    --field-bg: #ffffff;
-    --readonly-bg: #f3f4f6;
-    --required: #ef4444;
+    --accent: #1b1b18;
+    --accent-ink: #ccff00;  /* LUNATECS yellow: only ever on black */
+    --brand: #ccff00;
+    --header: #111111;
     --good: #16a34a;
     --bad: #dc2626;
     --pending: #d97706;
+    --heading: 'Barlow Condensed', 'Arial Narrow', sans-serif;
   }
 
   * { box-sizing: border-box; }
 
+  html, body { min-height: 100%; }
   body {
     margin: 0;
-    background: #ffffff;
+    background: var(--bg);
     color: var(--text);
     font-family: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
     font-size: 13px;
   }
 
-  .panel { padding: 12px; }
+  .panel { padding: 0 10px 84px; }
 
-  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .head h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  /* ---- Header + tabs ---- */
+  /* Black header band running edge to edge, with the yellow logo. */
+  .masthead { background: var(--header); margin: 0 -10px; padding: 0 10px; }
+  .top {
+    display: flex; align-items: center; gap: 9px;
+    padding: 10px 0 8px;
+    border-bottom: 1px solid #333333;
+  }
+  .top img { height: 30px; width: auto; flex-shrink: 0; }
+  .brand { white-space: nowrap; font-family: var(--heading); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; line-height: 1; color: #ffffff; }
+  .sub { font-family: var(--heading); font-weight: 500; font-size: 10.5px; letter-spacing: 0.12em; color: #b4b4b4; margin-top: 3px; }
+  .doc { margin-left: auto; font-size: 10px; color: #b4b4b4; white-space: nowrap; }
 
-  .status { display: flex; align-items: center; gap: 6px; margin: 4px 0 10px; font-size: 11.5px; color: var(--muted); }
+  .tabs { display: flex; align-items: center; gap: 14px; }
+  .tab {
+    font-family: var(--heading); font-weight: 600; font-size: 14px; letter-spacing: 0.08em;
+    color: #9a9a9a; background: none; border: none; padding: 8px 0 6px;
+    border-bottom: 3px solid transparent; cursor: pointer;
+  }
+  .tab.active { color: #ffffff; border-bottom-color: var(--brand); }
+  .tab:disabled { cursor: default; opacity: 0.5; }
+  .tab-link {
+    font-family: var(--heading); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.08em; color: var(--brand); text-decoration: none;
+  }
+
+  .status { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 11.5px; color: var(--muted); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pending); flex-shrink: 0; }
   .status.good .dot { background: var(--good); }
   .status.bad .dot { background: var(--bad); }
   .status.bad { color: var(--bad); }
 
+  /* ---- Form ---- */
   .card {
-    border: 1px solid var(--border);
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 12px 10px;
+    padding: 10px;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 9px 8px;
+    gap: 11px 8px;
   }
 
-  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field.full { grid-column: 1 / -1; }
 
-  label { font-size: 12px; font-weight: 500; color: var(--label); }
-  .req { color: var(--required); margin-left: 1px; }
+  label {
+    font-family: var(--heading); font-weight: 600; font-size: 11.5px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  }
+  .req { color: #ef4444; margin-left: 2px; }
 
   input, select, textarea {
     width: 100%;
     font: inherit;
     font-size: 12.5px;
     color: var(--text);
-    background: var(--field-bg);
-    border: 1px solid transparent;
+    background: var(--field);
+    border: 1px solid var(--line);
     border-radius: 7px;
     padding: 6px 8px;
-    box-shadow: 0 0 0 1px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.08);
     outline: none;
   }
+  input::placeholder, textarea::placeholder { color: #a1a1aa; }
   select { padding-right: 4px; }
+  select option { background: var(--field); color: var(--text); }
   textarea { resize: vertical; min-height: 44px; }
-  input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 2px rgba(24, 24, 27, 0.35); }
-  select:disabled, input:disabled { background: var(--readonly-bg); color: var(--muted); }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  select:disabled, input:disabled { color: var(--muted); opacity: 0.7; }
 
-  .actions { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  /* Chips: a select with class "chips" stays in the page (the code reads
+     and sets it as before) but is hidden behind a row of pills. */
+  select.chips { display: none; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font: inherit; font-size: 12px; font-weight: 500;
+    color: var(--text); background: var(--field);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 10px; cursor: pointer; line-height: 1.3;
+  }
+  .chip:hover { border-color: #a1a1aa; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .chip-empty { font-size: 11.5px; color: var(--muted); padding: 3px 0; }
+
+  /* ---- Sticky footer ---- */
+  .footer {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--card);
+    border-top: 1px solid var(--line);
+    padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
   .btn {
     width: 100%;
-    font: inherit;
-    font-weight: 600;
-    font-size: 13px;
-    color: #ffffff;
-    background: #1b1b18;
+    font-family: var(--heading); font-weight: 700; font-size: 15px; letter-spacing: 0.08em;
+    color: var(--accent-ink);
+    background: var(--accent);
     border: none;
-    border-radius: 7px;
+    border-radius: 8px;
     padding: 8px;
     cursor: pointer;
   }
-  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn:disabled { background: var(--line); color: var(--muted); cursor: default; }
   .hint { font-size: 10.5px; color: var(--muted); text-align: center; margin: 0; }
   .hint.good { color: var(--good); font-weight: 500; }
   .hint.bad { color: var(--bad); }
@@ -112,15 +168,17 @@
   summary { font-size: 11.5px; color: var(--muted); cursor: pointer; }
   #logWindow {
     margin-top: 6px;
-    max-height: 120px;
+    max-height: 140px;
     overflow-y: auto;
-    border: 1px solid var(--border);
+    background: var(--field);
+    border: 1px solid var(--line);
     border-radius: 7px;
     padding: 6px 8px;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 10px;
     line-height: 1.5;
   }
+  #logWindow a { color: var(--accent); }
   #logWindow .time { color: var(--muted); }
   #logWindow .success { color: var(--good); }
   #logWindow .error { color: var(--bad); }
@@ -130,16 +188,30 @@
 <body>
 <div class="panel">
 
-  <div class="head">
-    <h1>Create Part</h1>
-    <button id="simulateBtn" class="link" type="button">Fill demo part</button>
+  <div class="masthead">
+  <header class="top">
+    <img src="/logo-yellow.png" alt="LUNATECS 316" />
+    <div>
+      <div class="brand">PARTS TRACKER BRIDGE</div>
+      <div class="sub">ONSHAPE &rarr; LUNA PARTS</div>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" type="button">PARTS</button>
+    <button class="tab" type="button" disabled title="Coming soon">HISTORY</button>
+    <span id="docInfo" class="doc"></span>
+    <a class="tab-link" href="https://build.lunatecs.org" target="_blank" rel="noopener">LUNA &#8599;</a>
+  </nav>
   </div>
-  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span></div>
+
+  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span>
+    <button id="simulateBtn" class="link" type="button" style="margin-left:auto">Demo part</button></div>
 
   <form id="partForm" class="card" autocomplete="off">
     <div class="field full">
       <label for="projectSelect">Project</label>
-      <select id="projectSelect" disabled><option value="">Loading&hellip;</option></select>
+      <select id="projectSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
     </div>
 
     <div class="field">
@@ -151,37 +223,16 @@
       <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
     </div>
 
-    <div class="field">
+    <div class="field full">
       <label for="statusSelect">Status<span class="req">*</span></label>
       <!-- Filled from the statuses existing LUNA parts use (the API has no
            status list); defaults to "Designed". -->
-      <select id="statusSelect" disabled><option value="">Loading&hellip;</option></select>
-    </div>
-    <div class="field">
-      <label for="typeSelect">Type<span class="req">*</span></label>
-      <select id="typeSelect">
-        <option value="part">Part</option>
-        <option value="assembly">Assembly</option>
-        <option value="purchased">Purchased</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="toolSelect">Tool</label>
-      <select id="toolSelect" disabled><option value="">Loading&hellip;</option></select>
-    </div>
-    <div class="field">
-      <label for="prioritySelect">Priority</label>
-      <select id="prioritySelect">
-        <option value="0">Low</option>
-        <option value="1" selected>Normal</option>
-        <option value="2">High</option>
-      </select>
+      <select id="statusSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
     </div>
 
     <div class="field full">
-      <label for="parentSelect">Parent Assembly</label>
-      <select id="parentSelect" disabled><option value="">No Parent Assembly</option></select>
+      <label for="toolSelect">Machine</label>
+      <select id="toolSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
     </div>
 
     <div class="field full">
@@ -189,13 +240,36 @@
       <input id="materialInput" type="text" maxlength="255" />
     </div>
 
-    <div class="field">
+    <div class="field full">
       <label for="thicknessSelect">Thickness</label>
-      <select id="thicknessSelect" disabled><option value="">Loading&hellip;</option></select>
+      <select id="thicknessSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
     </div>
+
+    <div class="field full">
+      <label for="typeSelect">Type<span class="req">*</span></label>
+      <select id="typeSelect" class="chips">
+        <option value="part">Part</option>
+        <option value="assembly">Assembly</option>
+        <option value="purchased">Purchased</option>
+      </select>
+    </div>
+
+    <div class="field full">
+      <label for="prioritySelect">Priority</label>
+      <select id="prioritySelect" class="chips">
+        <option value="0">Low</option>
+        <option value="1" selected>Normal</option>
+        <option value="2">High</option>
+      </select>
+    </div>
+
     <div class="field">
       <label for="quantityInput">Quantity<span class="req">*</span></label>
       <input id="quantityInput" type="number" min="0" step="1" value="1" />
+    </div>
+    <div class="field">
+      <label for="leadTimeInput">Lead Time (Days)</label>
+      <input id="leadTimeInput" type="number" min="0" step="1" />
     </div>
 
     <div class="field">
@@ -203,8 +277,8 @@
       <input id="cutLengthInput" type="number" min="0" step="any" />
     </div>
     <div class="field">
-      <label for="leadTimeInput">Lead Time (Days)</label>
-      <input id="leadTimeInput" type="number" min="0" step="1" />
+      <label for="parentSelect">Parent Assembly</label>
+      <select id="parentSelect" disabled><option value="">None</option></select>
     </div>
 
     <div class="field full">
@@ -222,16 +296,16 @@
     </div>
   </form>
 
-  <div class="actions">
-    <button id="createBtn" class="btn" type="button" disabled>Create Part</button>
-    <p id="createResult" class="hint">Creates the part in LUNA Parts.</p>
-  </div>
-
   <details>
     <summary>Sync log</summary>
     <div id="logWindow"></div>
   </details>
 
+</div>
+
+<div class="footer">
+  <p id="createResult" class="hint">Creates the part in LUNA Parts.</p>
+  <button id="createBtn" class="btn" type="button" disabled>CREATE PART &rarr;</button>
 </div>
 
 <script>
@@ -261,6 +335,59 @@
   const drawingSelect = el('drawingSelect');
   const attachHint = el('attachHint');
   const logWindow = el('logWindow');
+
+  // ---- Chips ---------------------------------------------------------------
+  // Each <select class="chips"> is drawn as a row of pills. The select stays
+  // the source of truth, so the rest of the code reads and sets .value as
+  // usual and the pills follow along.
+  const chipRenderers = [];
+  const selectValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+
+  function chipify(select) {
+    const row = document.createElement('div');
+    row.className = 'chip-row';
+    select.after(row);
+
+    function render() {
+      row.innerHTML = '';
+      const options = [...select.options].filter((o) => o.value !== '');
+      if (!options.length) {
+        const empty = document.createElement('span');
+        empty.className = 'chip-empty';
+        empty.textContent = select.options[0] ? select.options[0].textContent : '';
+        row.appendChild(empty);
+        return;
+      }
+      const canClear = [...select.options].some((o) => o.value === '');
+      for (const option of options) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = option.value === select.value ? 'chip on' : 'chip';
+        // "Designed (Part has been designed)" -> "Designed"; full text on hover.
+        chip.textContent = option.textContent.replace(/\s*\(.*\)\s*$/, '');
+        chip.title = option.textContent;
+        chip.addEventListener('click', () => {
+          // Tapping the picked chip again clears it, where blank is allowed.
+          select.value = option.value === select.value && canClear ? '' : option.value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        row.appendChild(chip);
+      }
+    }
+
+    Object.defineProperty(select, 'value', {
+      configurable: true,
+      get() { return selectValue.get.call(this); },
+      set(v) { selectValue.set.call(this, v); render(); },
+    });
+    new MutationObserver(render).observe(select, { childList: true });
+    chipRenderers.push(render);
+    render();
+  }
+
+  document.querySelectorAll('select.chips').forEach(chipify);
+  // form.reset() changes values without going through the setter.
+  el('partForm').addEventListener('reset', () => setTimeout(() => chipRenderers.forEach((r) => r())));
 
   function log(message, kind) {
     const time = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -318,6 +445,7 @@
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
       const session = await fetch('/api/session', { credentials: 'include' }).then((r) => r.json());
       state.context = session.context;
+      if (session.context) el('docInfo').textContent = `DOC ${session.context.documentId.slice(0, 6)}`;
       log(session.context
         ? `Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`
         : 'Not opened from Onshape (no document info).');
@@ -340,14 +468,14 @@
 
   // ---- Parent Assembly depends on the chosen project ---------------------
   async function loadAssemblies(projectId) {
-    fillSelect(parentSelect, [], 'No Parent Assembly');
+    fillSelect(parentSelect, [], 'None');
     if (!projectId) return;
 
     try {
       const res = await fetch(`/api/luna/assemblies?project_id=${encodeURIComponent(projectId)}`, { credentials: 'include' });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
-      fillSelect(parentSelect, body.assemblies, 'No Parent Assembly',
+      fillSelect(parentSelect, body.assemblies, 'None',
         (a) => `${a.partNumber} ${a.name}`);
       parentSelect.disabled = false;
     } catch (err) {
@@ -507,7 +635,7 @@
     }
 
     createBtn.disabled = true;
-    createBtn.textContent = 'Creating\u2026';
+    createBtn.textContent = 'CREATING\u2026';
     try {
       const res = await fetch('/api/luna/parts', {
         method: 'POST',
@@ -526,13 +654,13 @@
       log(err.message, 'error');
     } finally {
       createBtn.disabled = false;
-      createBtn.textContent = 'Create Part';
+      createBtn.textContent = 'CREATE PART \u2192';
     }
   }
 
   // ---- Attachments (DXF of the clicked face + drawing PDF) ------------------
   async function attachFiles(created) {
-    createBtn.textContent = 'Attaching files\u2026';
+    createBtn.textContent = 'ATTACHING FILES\u2026';
     showCreateResult(`\u2713 Created ${created.partNumber}. Attaching DXF${drawingSelect.value ? ' and drawing PDF' : ''}\u2026`, 'good');
     try {
       const res = await fetch(`/api/luna/parts/${encodeURIComponent(created.id)}/attachments`, {
