@@ -670,6 +670,7 @@
       setStatus('Connected to LUNA Parts', 'good');
       log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
       loadStatuses();
+      loadUploaded();
 
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
       const session = await getJson('/api/session');
@@ -738,17 +739,23 @@
     if (!state.parts.length) {
       list.innerHTML = `<p class="chip-empty">No parts in this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'}.</p>`;
     }
-    // Bolts, bearings and other bought parts go under a closed fold.
-    const hardware = state.parts.filter((p) => p.group === 'hardware');
-    let fold = null;
-    if (hardware.length) {
-      fold = document.createElement('details');
+    // Parts already in LUNA, and bolts/bearings/other bought parts, go under
+    // closed folds at the bottom.
+    const folds = {};
+    const foldFor = (key, title, members) => {
+      if (!members.length) return null;
+      const fold = document.createElement('details');
       fold.className = 'hw-fold';
-      fold.open = hardware.some((p) => state.checked.has(p.partId));
+      fold.open = members.some((p) => state.checked.has(p.partId));
       const summary = document.createElement('summary');
-      summary.textContent = `HARDWARE (${hardware.length})`;
+      summary.textContent = `${title} (${members.length})`;
       fold.appendChild(summary);
-    }
+      folds[key] = fold;
+      return fold;
+    };
+    const section = (part) => (isUploaded(part) ? 'uploaded' : (part.group === 'hardware' ? 'hardware' : 'main'));
+    foldFor('uploaded', 'ALREADY IN LUNA', state.parts.filter((p) => section(p) === 'uploaded'));
+    foldFor('hardware', 'HARDWARE', state.parts.filter((p) => section(p) === 'hardware'));
     for (const part of state.parts) {
       const row = document.createElement('label');
       row.className = state.checked.has(part.partId) ? 'part-row on' : 'part-row';
@@ -795,9 +802,10 @@
       });
 
       row.append(box, text, tag);
-      (part.group === 'hardware' ? fold : list).appendChild(row);
+      (folds[section(part)] || list).appendChild(row);
     }
-    if (fold) list.appendChild(fold);
+    if (folds.uploaded) list.appendChild(folds.uploaded);
+    if (folds.hardware) list.appendChild(folds.hardware);
     updateListFooter();
   }
 
@@ -1112,7 +1120,41 @@
     return state.parts.find((p) => p.partId === currentPartId());
   }
 
-  function startCards() {
+  // Part numbers already in LUNA (any project), for the "Already in LUNA" fold.
+  function isUploaded(part) {
+    return Boolean(state.uploaded && state.uploaded.has(String(part.name || '').trim().toUpperCase()));
+  }
+
+  async function loadUploaded() {
+    try {
+      const body = await getJson('/api/luna/part-numbers');
+      state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
+      if (state.screen === 'list') renderPartList();
+    } catch (err) {
+      log(err.message, 'error');
+    }
+  }
+
+  // Re-reads names and materials just before the cards, so anything set in
+  // Onshape since the list loaded (like a material) is picked up.
+  async function refreshPartDetails() {
+    try {
+      const body = await getJson('/api/onshape/parts?fresh=1');
+      const fresh = new Map(body.parts.map((p) => [p.partId, p]));
+      for (const part of state.parts) {
+        const latest = fresh.get(part.partId);
+        if (latest) Object.assign(part, latest);
+      }
+    } catch (err) {
+      log(`Couldn't re-check Onshape for changes: ${err.message}`, 'error');
+    }
+  }
+
+  async function startCards() {
+    const button = el('startBtn');
+    button.disabled = true;
+    await refreshPartDetails();
+    button.disabled = false;
     // Keep the checklist's order.
     state.queue = state.parts.map((p) => p.partId).filter((id) => state.checked.has(id));
     state.step = 0;
@@ -1299,6 +1341,10 @@
         body: JSON.stringify(part),
       });
       result.name = created.partNumber || result.name;
+      if (created.partNumber) {
+        if (!state.uploaded) state.uploaded = new Set();
+        state.uploaded.add(String(created.partNumber).toUpperCase());
+      }
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
       if (!job.wantDxf && !job.drawingId && !job.wantStep) {
@@ -1508,8 +1554,8 @@
   el('useSelBtn').addEventListener('click', useSelection);
   el('refreshBtn').addEventListener('click', () => loadParts(true));
   el('allBtn').addEventListener('click', () => {
-    // ALL leaves the hardware alone.
-    for (const p of state.parts) if (p.group !== 'hardware') state.checked.add(p.partId);
+    // ALL leaves hardware and parts already in LUNA alone.
+    for (const p of state.parts) if (p.group !== 'hardware' && !isUploaded(p)) state.checked.add(p.partId);
     renderPartList();
   });
   el('clearBtn').addEventListener('click', () => {

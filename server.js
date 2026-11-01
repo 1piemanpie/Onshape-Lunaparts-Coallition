@@ -385,7 +385,7 @@ async function fetchAssemblyParts(req) {
 
   parts.sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]
     || a.name.localeCompare(b.name, undefined, { numeric: true }));
-  return { parts, byId: new Map(parts.map((p) => [p.id, p])) };
+  return { parts, byId: new Map(parts.map((p) => [p.id, p])), fetchedAt: Date.now() };
 }
 
 function getAssemblyParts(req, { refresh = false } = {}) {
@@ -434,9 +434,17 @@ app.get('/api/onshape/parts', async (req, res) => {
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
 
   const refresh = req.query.refresh === '1';
+  // ?fresh=1 (sent just before the part cards) re-reads names and materials
+  // right now; in a Part Studio only the quick /parts list, not the face data.
+  const fresh = req.query.fresh === '1';
+  // The list is cached per session, so a material or name set in Onshape
+  // after the panel first loaded would never show up. Reload anything older
+  // than PART_INDEX_MAX_AGE_MS.
+  const stale = (cached) => Date.now() - cached.fetchedAt > PART_INDEX_MAX_AGE_MS;
   try {
     if (await elementType(req) === 'ASSEMBLY') {
-      const list = await getAssemblyParts(req, { refresh });
+      let list = await getAssemblyParts(req, { refresh: refresh || fresh });
+      if (stale(list)) list = await getAssemblyParts(req, { refresh: true });
       return res.json({
         kind: 'assembly',
         parts: list.parts.map((p) => ({
@@ -445,7 +453,12 @@ app.get('/api/onshape/parts', async (req, res) => {
         })),
       });
     }
-    const index = await getPartIndex(req, dwe, { refresh });
+    let index = await getPartIndex(req, dwe, { refresh });
+    if (stale(index)) {
+      index = await getPartIndex(req, dwe, { refresh: true });
+    } else if (fresh) {
+      for (const p of await onshapeFetch(req, `/parts/${dwe}`)) index.partsById.set(p.partId, p);
+    }
     const parts = [...index.partsById.values()]
       .map((p) => ({
         partId: p.partId,
@@ -733,6 +746,23 @@ app.get('/api/luna/options', async (req, res) => {
         ? 'The API key\'s user isn\'t allowed to read this.'
         : 'Could not reach LUNA Parts.';
     res.status(502).json({ error: message });
+  }
+});
+
+// Read-only: every part number already in LUNA, so the panel can fold away
+// parts that have been uploaded.
+app.get('/api/luna/part-numbers', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+  try {
+    const parts = await lunaGetAll('parts');
+    res.json({
+      partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
+    });
+  } catch (err) {
+    console.error('LUNA Parts part-number list failed:', err);
+    res.status(502).json({ error: 'Could not read part numbers from LUNA Parts.' });
   }
 });
 
