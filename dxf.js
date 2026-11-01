@@ -8,6 +8,16 @@
 
 const METERS_TO_INCHES = 1 / 0.0254;
 
+// Bearing bores are reamed after cutting, so the DXF cuts them 0.010" small
+// to leave the reamer something to clean up (team standard, Micah 2026-11-01).
+const REAMED_BORES_IN = [1.125, 0.875];
+const REAM_UNDERSIZE_IN = 0.010;
+const BORE_TOLERANCE_IN = 0.002;
+
+function reamedBore(diameter) {
+  return REAMED_BORES_IN.find((d) => Math.abs(d - diameter) <= BORE_TOLERANCE_IN) || null;
+}
+
 function vec(p) {
   if (!p) return null;
   return Array.isArray(p) ? p.slice(0, 3) : [p.x, p.y, p.z];
@@ -112,6 +122,7 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
   const edges = faceEdges(body, face);
   const to2d = faceFrame(face, edges);
   const entities = [];
+  const reamed = [];
 
   for (const edge of edges) {
     const type = isExact(edge) ? kind(edge.curve) : 'OTHER';
@@ -124,7 +135,9 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
       const start = to2d(g.startPoint);
       const end = to2d(g.endPoint);
       if (Math.hypot(start[0] - end[0], start[1] - end[1]) < 1e-6) {
-        entities.push({ kind: 'CIRCLE', center, radius });
+        const bore = reamedBore(radius * 2);
+        if (bore) reamed.push(bore);
+        entities.push({ kind: 'CIRCLE', center, radius: bore ? (bore - REAM_UNDERSIZE_IN) / 2 : radius });
       } else {
         // DXF arcs always run counter-clockwise, so check which way round
         // the edge goes by where its midpoint falls.
@@ -156,7 +169,7 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
   const minY = Math.min(...all.map((p) => p[1]));
   const shift = (p) => [p[0] - minX, p[1] - minY];
 
-  return { dxf: writeDxf(entities, shift), usedClicked, entityCount: entities.length };
+  return { dxf: writeDxf(entities, shift), usedClicked, entityCount: entities.length, reamed };
 }
 
 function writeDxf(entities, shift) {
@@ -189,4 +202,4 @@ function writeDxf(entities, shift) {
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { faceToDxf, edgesNeedingPoints, pickFace, isPlanar };
+module.exports = { faceToDxf, edgesNeedingPoints, pickFace, isPlanar, REAM_UNDERSIZE_IN };
