@@ -13,7 +13,8 @@
 
 <style>
   /* 6328-style layout (pill "chips" instead of dropdowns, sticky footer)
-     in LUNA Parts' own black and white, sized for Onshape's ~300px panel. */
+     in Team 316 LUNATECS colors: black, white and the logo's yellow. The
+     yellow is only used on black, where it's easy to read. */
   :root {
     --bg: #ffffff;
     --card: #ffffff;
@@ -22,7 +23,9 @@
     --text: #1b1b18;
     --muted: #71717a;
     --accent: #1b1b18;
-    --accent-ink: #ffffff;
+    --accent-ink: #ccff00;  /* LUNATECS yellow: only ever on black */
+    --brand: #ccff00;
+    --header: #111111;
     --good: #16a34a;
     --bad: #dc2626;
     --pending: #d97706;
@@ -43,27 +46,29 @@
   .panel { padding: 0 10px 84px; }
 
   /* ---- Header + tabs ---- */
+  /* Black header band running edge to edge, with the yellow logo. */
+  .masthead { background: var(--header); margin: 0 -10px; padding: 0 10px; }
   .top {
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 9px;
     padding: 10px 0 8px;
-    border-bottom: 2px solid var(--accent);
+    border-bottom: 1px solid #333333;
   }
-  .top img { width: 30px; height: 30px; flex-shrink: 0; }
-  .brand { font-family: var(--heading); font-weight: 700; font-size: 17px; letter-spacing: 0.04em; line-height: 1; }
-  .sub { font-family: var(--heading); font-weight: 500; font-size: 11px; letter-spacing: 0.12em; color: var(--muted); margin-top: 2px; }
-  .doc { margin-left: auto; text-align: right; font-size: 10px; color: var(--muted); line-height: 1.3; }
+  .top img { height: 30px; width: auto; flex-shrink: 0; }
+  .brand { white-space: nowrap; font-family: var(--heading); font-weight: 700; font-size: 15px; letter-spacing: 0.05em; line-height: 1; color: #ffffff; }
+  .sub { font-family: var(--heading); font-weight: 500; font-size: 10.5px; letter-spacing: 0.12em; color: #b4b4b4; margin-top: 3px; }
+  .doc { margin-left: auto; font-size: 10px; color: #b4b4b4; white-space: nowrap; }
 
-  .tabs { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--line); }
+  .tabs { display: flex; align-items: center; gap: 14px; }
   .tab {
     font-family: var(--heading); font-weight: 600; font-size: 14px; letter-spacing: 0.08em;
-    color: var(--muted); background: none; border: none; padding: 8px 0 6px;
-    border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
+    color: #9a9a9a; background: none; border: none; padding: 8px 0 6px;
+    border-bottom: 3px solid transparent; cursor: pointer;
   }
-  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab.active { color: #ffffff; border-bottom-color: var(--brand); }
   .tab:disabled { cursor: default; opacity: 0.5; }
   .tab-link {
-    margin-left: auto; font-family: var(--heading); font-weight: 600; font-size: 12px;
-    letter-spacing: 0.08em; color: var(--accent); text-decoration: none;
+    font-family: var(--heading); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.08em; color: var(--brand); text-decoration: none;
   }
 
   .status { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 11.5px; color: var(--muted); }
@@ -183,20 +188,22 @@
 <body>
 <div class="panel">
 
+  <div class="masthead">
   <header class="top">
-    <img src="/icon.png" alt="" />
+    <img src="/logo-yellow.png" alt="LUNATECS 316" />
     <div>
       <div class="brand">PARTS TRACKER BRIDGE</div>
       <div class="sub">ONSHAPE &rarr; LUNA PARTS</div>
     </div>
-    <div id="docInfo" class="doc"></div>
   </header>
 
   <nav class="tabs">
     <button class="tab active" type="button">PARTS</button>
     <button class="tab" type="button" disabled title="Coming soon">HISTORY</button>
+    <span id="docInfo" class="doc"></span>
     <a class="tab-link" href="https://build.lunatecs.org" target="_blank" rel="noopener">LUNA &#8599;</a>
   </nav>
+  </div>
 
   <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting to LUNA Parts&hellip;</span>
     <button id="simulateBtn" class="link" type="button" style="margin-left:auto">Demo part</button></div>
