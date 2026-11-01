@@ -18,8 +18,25 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const norm = (a) => scale(a, 1 / Math.hypot(...a));
 
+// Onshape spells geometry types "PLANE" in its API spec but "plane" in real
+// bodydetails responses, so compare case-insensitively.
+function kind(desc) {
+  return String((desc && desc.type) || '').toUpperCase();
+}
+
 function isPlanar(face) {
-  return Boolean(face && face.surface && face.surface.type === 'PLANE');
+  return Boolean(face && kind(face.surface) === 'PLANE');
+}
+
+// Lines and circles are written exactly when Onshape gave us their points;
+// anything else is drawn through tessellated points.
+function isExact(edge) {
+  const g = edge.geometry || {};
+  if (kind(edge.curve) === 'LINE') return Boolean(g.startPoint && g.endPoint);
+  if (kind(edge.curve) === 'CIRCLE') {
+    return Boolean(edge.curve.origin && edge.curve.radius && g.startPoint && g.endPoint && g.midPoint);
+  }
+  return false;
 }
 
 // The face the user clicked if it's flat; otherwise the part's biggest flat
@@ -44,7 +61,7 @@ function faceEdges(body, face) {
 // Edges other than lines and circles need extra points; returns their IDs.
 function edgesNeedingPoints(body, face) {
   return faceEdges(body, face)
-    .filter((e) => !['LINE', 'CIRCLE'].includes(e.curve && e.curve.type))
+    .filter((e) => !isExact(e))
     .map((e) => e.id);
 }
 
@@ -58,7 +75,7 @@ function faceFrame(face, edges) {
   let xAxis = null;
   let longest = 0;
   for (const edge of edges) {
-    if (!edge.curve || edge.curve.type !== 'LINE' || !edge.geometry) continue;
+    if (kind(edge.curve) !== 'LINE' || !isExact(edge)) continue;
     const d = sub(vec(edge.geometry.endPoint), vec(edge.geometry.startPoint));
     const inPlane = sub(d, scale(normal, dot(d, normal)));
     const length = Math.hypot(...inPlane);
@@ -69,7 +86,8 @@ function faceFrame(face, edges) {
     xAxis = norm(cross(helper, normal));
   }
   const yAxis = cross(normal, xAxis);
-  const origin = vec(surface.origin);
+  const firstPoint = edges.map((e) => e.geometry && e.geometry.startPoint).find(Boolean);
+  const origin = vec(surface.origin) || vec(firstPoint) || [0, 0, 0];
 
   return (p) => {
     const d = sub(vec(p), origin);
@@ -86,14 +104,17 @@ const degrees = (a) => ((a * 180) / Math.PI + 360) % 360;
 // edgePoints: Map of edgeId -> [points] for edges that aren't lines/circles.
 function faceToDxf(body, faceId, edgePoints = new Map()) {
   const { face, usedClicked } = pickFace(body, faceId);
-  if (!face) throw new Error('This part has no flat face to make a DXF from.');
+  if (!face) {
+    const seen = [...new Set((body.faces || []).map((f) => kind(f.surface).toLowerCase() || 'unknown'))];
+    throw new Error(`This part has no flat face to make a DXF from (its faces are: ${seen.join(', ') || 'none'}).`);
+  }
 
   const edges = faceEdges(body, face);
   const to2d = faceFrame(face, edges);
   const entities = [];
 
   for (const edge of edges) {
-    const type = edge.curve && edge.curve.type;
+    const type = isExact(edge) ? kind(edge.curve) : 'OTHER';
     const g = edge.geometry || {};
     if (type === 'LINE') {
       entities.push({ kind: 'LINE', a: to2d(g.startPoint), b: to2d(g.endPoint) });
@@ -119,9 +140,11 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
     } else {
       const points = edgePoints.get(edge.id)
         || [g.startPoint, g.quarterPoint, g.midPoint, g.endPoint].filter(Boolean);
-      entities.push({ kind: 'POLYLINE', points: points.map(to2d) });
+      if (points.length >= 2) entities.push({ kind: 'POLYLINE', points: points.map(to2d) });
     }
   }
+
+  if (!entities.length) throw new Error('Couldn\'t read the outline of the part\'s flat face for the DXF.');
 
   // Put the part's corner at 0,0.
   const all = entities.flatMap((e) => {
