@@ -696,6 +696,7 @@
     }
     state.screen = name;
     showHint('');
+    saveProgress();
     window.scrollTo(0, 0);
     updateBanner();
   }
@@ -738,7 +739,7 @@
 
         setStatus('Connected to LUNA Parts', 'good');
         log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
-        loadStatuses();
+        loadStatuses().then(markLunaReady);
         loadUploaded();
         if (state.context) restoreProject();
         updateListFooter();
@@ -846,6 +847,7 @@
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
+      if (!progressRestored) restoreProgress();
       renderPartList();
       mergeSameNamed();
       renderPartList();
@@ -1015,6 +1017,8 @@
     if (state.screen === 'list') {
       showHint(n && missing ? 'Pick a project first.' : '');
     }
+    if (n && state.partsLoaded && state.screen === 'list') refreshPartDetails();
+    saveProgress();
   }
 
   // ---- Smart defaults (from the team's manufacturing manual) ---------------
@@ -1685,6 +1689,99 @@
   el('namerDone').addEventListener('click', () => namer.finish());
   el('namerUndo').addEventListener('click', () => { namer.chain = namer.chain.then(() => namer.undo()); });
 
+  // ---- Saved progress --------------------------------------------------------
+  // Onshape reloads the panel when you switch to another tab and back, which
+  // used to lose the ticks and the card you were on. They're saved in this
+  // browser for each tab (document + Part Studio or assembly) and put back
+  // when the panel opens again. Uploads that were still running when the
+  // panel closed can't be finished, so they show as STOPPED.
+  var PROGRESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+  var DRAFT_FIELDS = ['cardProjectSelect', 'nameInput', 'partNumberInput', 'statusSelect', 'typeSelect',
+    'quantityInput', 'toolSelect', 'prioritySelect', 'parentSelect', 'materialInput', 'thicknessSelect',
+    'cutLengthInput', 'leadTimeInput', 'descriptionInput', 'drawingSelect'];
+  var progressRestored = false; // nothing is saved until the old save has been read
+  var restoringCard = false;
+  var markLunaReady;
+  var lunaReady = new Promise((resolve) => { markLunaReady = resolve; });
+
+  function progressKey() {
+    const c = state.context;
+    return c ? `lunaProgress:${c.documentId}:${c.elementId}` : '';
+  }
+
+  function cardDraft() {
+    if (state.screen !== 'card' || !currentPartId()) return null;
+    const values = {};
+    for (const id of DRAFT_FIELDS) values[id] = el(id).value;
+    return { partId: currentPartId(), values, step: el('stepInput').checked };
+  }
+
+  function saveProgress() {
+    const key = progressKey();
+    if (!key || !progressRestored || restoringCard) return;
+    const data = {
+      savedAt: Date.now(),
+      screen: state.screen,
+      checked: [...state.checked],
+      queue: state.queue,
+      current: currentPartId() || null,
+      results: state.results.map(({ name, outcome, detail, kind }) => ({ name, outcome, detail, kind })),
+      draft: cardDraft(),
+    };
+    try { localStorage.setItem(key, JSON.stringify(data)); } catch (err) { /* storage blocked or full */ }
+  }
+
+  function readProgress() {
+    try {
+      const data = JSON.parse(localStorage.getItem(progressKey()) || 'null');
+      return data && Date.now() - data.savedAt < PROGRESS_MAX_AGE_MS ? data : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Runs once, when the parts list first arrives.
+  function restoreProgress() {
+    const data = readProgress();
+    progressRestored = true;
+    if (!data) return;
+    const ids = new Set(state.parts.map((p) => p.partId));
+    for (const id of data.checked || []) if (ids.has(id)) state.checked.add(id);
+    state.results = (data.results || []).map((r) => (r.outcome === 'pending'
+      ? { ...r, outcome: 'stopped', kind: 'bad', detail: 'Stopped when the panel closed. Check LUNA Parts before uploading it again.' }
+      : r));
+    const queue = (data.queue || []).filter((id) => ids.has(id));
+    const step = queue.indexOf(data.current);
+    const stopped = state.results.filter((r) => r.outcome === 'stopped').length;
+    if (stopped) log(`${stopped} upload${stopped === 1 ? ' was' : 's were'} still running when the panel closed. Check ${stopped === 1 ? 'it' : 'them'} in LUNA Parts.`, 'error');
+    if (state.checked.size) log(`Put back ${state.checked.size} ticked part${state.checked.size === 1 ? '' : 's'} from before.`);
+    if (data.screen === 'card' && step >= 0) {
+      state.queue = queue;
+      state.step = step;
+      // The card's lists (projects, statuses, machines) come from LUNA.
+      restoringCard = true;
+      lunaReady.then(() => {
+        restoringCard = false;
+        if (state.screen !== 'list' || currentPartId() !== data.current) return;
+        showScreen('card');
+        loadCard();
+        const draft = data.draft;
+        if (draft && draft.partId === data.current) {
+          for (const id of DRAFT_FIELDS) if (draft.values[id] !== undefined) el(id).value = draft.values[id];
+          el('stepInput').checked = Boolean(draft.step);
+          updateAttachHint();
+        }
+        log(`Back on part ${state.step + 1} of ${state.queue.length}.`);
+        saveProgress();
+      });
+    } else if (data.screen === 'done' && state.results.length) {
+      setTimeout(showDone, 0);
+    }
+  }
+
+  el('partForm').addEventListener('input', saveProgress);
+  el('partForm').addEventListener('change', saveProgress);
+
   // ---- Stepping through the ticked parts -----------------------------------
   function currentPartId() {
     return state.queue[state.step];
@@ -1734,24 +1831,43 @@
 
   // Re-reads names and materials just before the cards, so anything set in
   // Onshape since the list loaded (like a material) is picked up.
-  async function refreshPartDetails() {
-    try {
-      const body = await getJson('/api/onshape/parts?fresh=1');
+  // In an assembly this re-reads the whole assembly and takes 10-15 seconds,
+  // so it starts in the background as soon as parts are ticked and CREATE
+  // PARTS usually finds it done. A check less than a minute old is reused.
+  var DETAILS_REUSE_MS = 60 * 1000;
+  var DETAILS_WAIT_MS = 25 * 1000;
+  var detailsCheck = null; // { promise, startedAt }
+  function refreshPartDetails() {
+    if (detailsCheck && Date.now() - detailsCheck.startedAt < DETAILS_REUSE_MS) return detailsCheck.promise;
+    const promise = getJson('/api/onshape/parts?fresh=1').then((body) => {
       const fresh = new Map(body.parts.map((p) => [p.partId, p]));
       for (const part of state.parts) {
         const latest = fresh.get(part.partId);
         if (latest) Object.assign(part, latest);
       }
-    } catch (err) {
+    }).catch((err) => {
+      if (detailsCheck && detailsCheck.promise === promise) detailsCheck = null;
       log(`Couldn't re-check Onshape for changes: ${err.message}`, 'error');
-    }
+    });
+    detailsCheck = { promise, startedAt: Date.now() };
+    return promise;
   }
 
   async function startCards() {
     const button = el('startBtn');
     button.disabled = true;
-    await refreshPartDetails();
+    button.textContent = 'PREPARING\u2026';
+    showHint('Preparing the part upload tool\u2026 checking Onshape for new names and materials.');
+    // Never hang here: after a while go on with what the list already has.
+    let waited = false;
+    await Promise.race([
+      refreshPartDetails(),
+      new Promise((r) => setTimeout(() => { waited = true; r(); }, DETAILS_WAIT_MS)),
+    ]);
+    if (waited) log('Onshape is slow to answer, so the cards use the names and materials from the list.');
+    button.innerHTML = 'CREATE PARTS &rarr;';
     button.disabled = false;
+    showHint('');
     // Keep the checklist's order.
     state.queue = state.parts.map((p) => p.partId).filter((id) => state.checked.has(id));
     state.step = 0;
@@ -2149,7 +2265,7 @@
 
   function uploadCounts() {
     const count = (outcome) => state.results.filter((r) => r.outcome === outcome).length;
-    return { pending: count('pending'), sent: count('created'), failed: count('failed'), skipped: count('skipped') };
+    return { pending: count('pending'), sent: count('created'), failed: count('failed'), skipped: count('skipped'), stopped: count('stopped') };
   }
 
   // A one-line status on the part screens, and a live summary on the last one.
@@ -2157,12 +2273,14 @@
     const c = uploadCounts();
     const line = el('uploadStatus');
     const parts = [];
-    if (c.pending) parts.push(`Uploading ${c.pending}…`);
+    if (c.pending) parts.push(`Uploading ${c.pending}… stay on this tab until it’s done`);
     if (c.sent) parts.push(`${c.sent} sent`);
     if (c.failed) parts.push(`${c.failed} failed`);
+    if (c.stopped) parts.push(`${c.stopped} stopped`);
     line.textContent = parts.join(' · ');
-    line.className = c.failed ? 'upload-status bad' : 'upload-status';
+    line.className = c.failed || c.stopped ? 'upload-status bad' : 'upload-status';
     if (state.screen === 'done') renderDone();
+    saveProgress();
   }
 
   // DXFs are only for parts cut on the CNC. With no machine picked, a
@@ -2212,6 +2330,7 @@
     pending: ['UPLOADING', 'tag'],
     failed: ['FAILED', 'tag bad'],
     skipped: ['SKIPPED', 'tag'],
+    stopped: ['STOPPED', 'tag bad'],
   };
 
   function showDone() {
@@ -2249,6 +2368,7 @@
     let summary = `${c.sent} of ${total} part${total === 1 ? '' : 's'} sent to LUNA Parts`;
     if (c.pending) summary += `, ${c.pending} still uploading`;
     if (c.failed) summary += `. ${c.failed} failed and ${c.failed === 1 ? 'is' : 'are'} ticked again on the parts list`;
+    if (c.stopped) summary += `. ${c.stopped} stopped when the panel closed; check ${c.stopped === 1 ? 'it' : 'them'} in LUNA Parts`;
     showHint(`${summary}.`, c.failed ? 'bad' : (c.sent ? 'good' : ''));
   }
 
