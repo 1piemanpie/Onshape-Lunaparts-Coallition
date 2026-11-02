@@ -578,8 +578,11 @@ async function fetchAssemblyParts(req, { reuseDerived = false } = {}) {
 
   const subKey = (a) => `${a.documentId}|${a.elementId}|${a.configuration || ''}`;
   const subs = new Map((def.subAssemblies || []).map((a) => [subKey(a), a]));
+  // A part from this document's own workspace leaves out the microversion:
+  // it changes on every edit anywhere in the document (making a drawing too),
+  // which used to change the part's id between the list and a later request.
   const partKey = (p) => [p.documentId, p.elementId, p.partId, p.configuration || '',
-    p.documentVersion || p.documentMicroversion || ''].join('|');
+    p.documentVersion || (p.documentId === ctx.documentId ? '' : p.documentMicroversion) || ''].join('|');
   const standard = new Set((def.parts || []).filter((p) => p.standardContent).map(partKey));
 
   const byKey = new Map();
