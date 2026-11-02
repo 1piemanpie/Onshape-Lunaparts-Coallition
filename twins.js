@@ -28,11 +28,27 @@ const unit = (a) => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l]; }
 // Points that come out the same wherever a copy is placed and however it
 // was modelled: line ends, other curves' ends, and circle and arc centres
 // (tagged with the radius). Arc ends are left out because a hole can be one
-// circle in one part and two half-circles in its copy, and a closed curve's
-// start point is just where Onshape put the seam.
+// circle in one part and two half-circles in its copy.
 function keyPoints(body) {
+  const edges = (body && body.edges) || [];
+  // A hole's wall has a straight seam line whose ends sit on the hole's
+  // circle (at the seam of a full circle, or where Onshape split it into
+  // two arcs). Where those go depends on how the part was modelled, so a
+  // turned copy of a tube can have them on the other side. Line ends that
+  // touch a circle or arc are skipped; the circle's centre stands in for
+  // them. Closed curves' seam points are skipped the same way.
+  const seams = new Map();
+  for (const edge of edges) {
+    const g = edge.geometry || {};
+    const type = String((edge.curve && edge.curve.type) || '').toLowerCase();
+    const start = vec(g.startPoint);
+    const end = vec(g.endPoint);
+    if (!start || !end) continue;
+    if (type === 'circle' || type === 'arc') { addPoint(seams, start, ''); addPoint(seams, end, ''); }
+    else if (len(sub(start, end)) <= TOL) addPoint(seams, start, '');
+  }
   const pts = [];
-  for (const edge of (body && body.edges) || []) {
+  for (const edge of edges) {
     const g = edge.geometry || {};
     const type = String((edge.curve && edge.curve.type) || '').toLowerCase();
     const start = vec(g.startPoint);
@@ -42,7 +58,7 @@ function keyPoints(body) {
       const radius = Number(edge.curve.radius);
       if (origin && radius > 0) pts.push({ p: origin, tag: `r${Math.round(radius / TOL)}` });
     } else if (start && end && (type === 'line' || len(sub(start, end)) > TOL)) {
-      pts.push({ p: start, tag: '' }, { p: end, tag: '' });
+      for (const p of [start, end]) if (!hasPoint(seams, p, '')) pts.push({ p, tag: '' });
     }
   }
   // Shared corners appear once per edge: keep one.
