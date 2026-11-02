@@ -843,6 +843,8 @@
       state.parts = body.parts;
       applyManualCots();
       state.partsLoaded = true;
+      state.partsLoadedAt = Date.now();
+      state.partsError = '';
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
       // Forget ticks for parts that no longer exist.
@@ -852,11 +854,12 @@
       renderPartList();
       mergeSameNamed();
       renderPartList();
-      prefetchPictures();
       loadTwins();
       log(`${body.parts.length} parts loaded from this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'} in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
     } catch (err) {
-      el('partList').innerHTML = '<p class="chip-empty">Couldn’t load parts.</p>';
+      // Kept, so a later redraw shows the reason instead of "Loading parts".
+      state.partsError = err.message;
+      renderPartList();
       log(err.message, 'error');
     }
   }
@@ -868,6 +871,7 @@
     // "Loading" until the parts themselves have arrived.
     if (!state.partsLoaded) {
       list.innerHTML = '<p class="chip-empty">Loading parts&hellip;</p>';
+      if (state.partsError) list.firstChild.textContent = `Couldn\u2019t load parts. ${state.partsError}`;
       return;
     }
     list.innerHTML = '';
@@ -1018,7 +1022,6 @@
     if (state.screen === 'list') {
       showHint(n && missing ? 'Pick a project first.' : '');
     }
-    if (n && state.partsLoaded && state.screen === 'list') refreshPartDetails();
     saveProgress();
   }
 
@@ -1232,33 +1235,9 @@
     reset() { this.pinned = null; clearTimeout(this.timer); this.hide(); },
   };
 
-  // Pictures are fetched in the background as soon as the list shows, a few
-  // at a time, so hovering a row is instant. Parts to make come first;
-  // hardware is skipped (there can be hundreds of fasteners).
+  // Pictures shown so far (fetched on hover or SEE, not for every part up
+  // front, since Onshape caps how many API calls the app gets a year).
   const pictures = new Map(); // partId -> object URL
-  let prefetchRun = 0;
-  async function prefetchPictures() {
-    const run = ++prefetchRun;
-    const order = { main: 0, uploaded: 1, block: 2 };
-    const sectionOf = (p) => (isUploaded(p) ? 'uploaded' : (p.group === 'block' ? 'block' : 'main'));
-    const todo = state.parts
-      .filter((p) => p.group !== 'hardware' && !pictures.has(p.partId))
-      .sort((a, b) => order[sectionOf(a)] - order[sectionOf(b)]);
-    const worker = async () => {
-      for (let part = todo.shift(); part && run === prefetchRun; part = todo.shift()) {
-        try {
-          const res = await fetch(`/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`);
-          if (res.ok) pictures.set(part.partId, URL.createObjectURL(await res.blob()));
-          if (!part.dims) {
-            const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
-            part.dims = body.dims;
-            if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
-          }
-        } catch (err) { /* the hover will try again */ }
-      }
-    };
-    await Promise.all([1, 2, 3].map(worker));
-  }
 
   // Clicking a part in the assembly's 3D view finds its row: opens its fold,
   // scrolls to it and lights it up, and shows its picture.
@@ -1832,13 +1811,14 @@
 
   // Re-reads names and materials just before the cards, so anything set in
   // Onshape since the list loaded (like a material) is picked up.
-  // In an assembly this re-reads the whole assembly and takes 10-15 seconds,
-  // so it starts in the background as soon as parts are ticked and CREATE
-  // PARTS usually finds it done. A check less than a minute old is reused.
-  var DETAILS_REUSE_MS = 60 * 1000;
+  // In an assembly this re-reads the whole assembly (10-15 seconds and a
+  // good number of Onshape API calls, which Onshape caps each year), so it's
+  // skipped when the list or the last check is less than 3 minutes old.
+  var DETAILS_REUSE_MS = 3 * 60 * 1000;
   var DETAILS_WAIT_MS = 25 * 1000;
   var detailsCheck = null; // { promise, startedAt }
   function refreshPartDetails() {
+    if (state.partsLoadedAt && Date.now() - state.partsLoadedAt < DETAILS_REUSE_MS) return Promise.resolve();
     if (detailsCheck && Date.now() - detailsCheck.startedAt < DETAILS_REUSE_MS) return detailsCheck.promise;
     const promise = getJson('/api/onshape/parts?fresh=1').then((body) => {
       const fresh = new Map(body.parts.map((p) => [p.partId, p]));
