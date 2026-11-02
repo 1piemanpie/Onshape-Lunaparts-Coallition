@@ -372,6 +372,19 @@ function isLocalSource(ctx, source) {
   return source.dwe.startsWith(`d/${ctx.documentId}/w/${ctx.workspaceId}/`);
 }
 
+// Parts linked in from another document (FRC Design App shafts, spacers)
+// can't be renamed, so their team number lives only in LUNA Parts. The LUNA
+// part's notes carry this tag, e.g. "[onshape:<assembly doc>|<source doc>|
+// <element>|<part>|<configuration>]", which is how the panel finds the number
+// again. The source version is left out so a library update keeps the match.
+const ONSHAPE_TAG = /\[onshape:([^\]\s]{1,400})\]/;
+function linkedPartKey(ctx, source, partId) {
+  const m = source.dwe.match(/^d\/([^/]+)\/[wvm]\/[^/]+\/e\/([^/]+)$/);
+  if (!m) return null;
+  const configuration = source.configuration === 'default' ? '' : (source.configuration || '');
+  return [ctx.documentId, m[1], m[2], partId, encodeURIComponent(configuration)].join('|');
+}
+
 async function fetchAssemblyParts(req) {
   const ctx = req.session.onshapeContext;
   const def = await onshapeFetch(req,
@@ -541,6 +554,8 @@ app.get('/api/onshape/parts', async (req, res) => {
         parts: list.parts.map((p) => ({
           partId: p.id, name: p.name, material: p.material || null, quantity: p.quantity, group: p.group,
           linked: !isLocalSource(req.session.onshapeContext, p.source),
+          onshapeKey: isLocalSource(req.session.onshapeContext, p.source)
+            ? undefined : linkedPartKey(req.session.onshapeContext, p.source, p.partId),
           occurrences: p.occurrences,
         })),
       });
@@ -850,8 +865,15 @@ app.get('/api/luna/part-numbers', async (req, res) => {
   }
   try {
     const parts = await lunaGetAll('parts');
+    const linked = {};
+    for (const p of parts) {
+      const m = String(p.notes || '').match(ONSHAPE_TAG);
+      const number = String(p.part_number || '').trim();
+      if (m && number && !linked[m[1]]) linked[m[1]] = number;
+    }
     res.json({
       partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
+      linked,
     });
   } catch (err) {
     console.error('LUNA Parts part-number list failed:', err);
@@ -995,6 +1017,20 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
     if (Number.isNaN(fields[key])) problems.push(`${key.replace(/_/g, ' ')} isn't a valid number.`);
   }
   if (problems.length) return res.status(400).json({ error: problems.join(' ') });
+
+  // A linked assembly part gets the tag that ties its LUNA number to it.
+  const panelPartId = String(b.onshapePartId || '');
+  if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
+    try {
+      const list = await getAssemblyParts(req);
+      const part = list.byId.get(panelPartId);
+      const ctx = req.session.onshapeContext;
+      const key = part && !isLocalSource(ctx, part.source) && linkedPartKey(ctx, part.source, part.partId);
+      if (key) fields.notes = `[onshape:${key}]`;
+    } catch (err) {
+      console.error('Linked part lookup failed:', err.message);
+    }
+  }
 
   try {
     if (fields.part_number) {
