@@ -1159,6 +1159,7 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
   const partNumber = String(b.partNumber || '').trim();
   const qty = Math.max(1, Math.min(9999, parseInt(b.quantity, 10) || 1));
   const material = String(b.material || '').slice(0, 80);
+  const partName = String(b.partName || '').replace(/\s+/g, ' ').trim().slice(0, 60);
   if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
   if (!partNumber || partNumber.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
 
@@ -1215,6 +1216,7 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
       box,
       name,
       partNumber,
+      partName,
       qty,
       material,
       exportJson: async (drawingEid) => JSON.parse(String(await runTranslation(req,
