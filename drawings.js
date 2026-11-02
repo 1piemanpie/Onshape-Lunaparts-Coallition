@@ -767,11 +767,12 @@ function edgeGap(p, b) {
 
 // ---- Onshape calls -------------------------------------------------------
 // api(path, options) is the server's onshapeFetch bound to the request.
-async function waitForModify(api, id, what) {
+async function waitForModify(api, id, what, first = { requestState: 'ACTIVE' }) {
   // Onshape API calls are capped per year, so check rarely: most edits are
-  // done within a few seconds, so the first look waits 2.5 s.
+  // done within a few seconds, so the first look waits 2.5 s. If Onshape
+  // already says it's finished when the edit starts, no checks at all.
   const deadline = Date.now() + 90 * 1000;
-  let st = { requestState: 'ACTIVE' };
+  let st = first && first.requestState ? first : { requestState: 'ACTIVE' };
   let delay = 2500;
   while (st.requestState === 'ACTIVE') {
     if (Date.now() > deadline) throw new Error(`Onshape took too long to ${what}.`);
@@ -790,7 +791,7 @@ async function modify(api, ctx, eid, description, jsonRequest, what) {
     method: 'POST',
     body: JSON.stringify({ description: description.slice(0, 32), jsonRequests: [{ formatVersion: '2021-01-01', ...jsonRequest }] }),
   });
-  return waitForModify(api, started.id, what);
+  return waitForModify(api, started.id, what, started);
 }
 
 function failures(output) {
@@ -817,12 +818,22 @@ async function createDrawingElement(api, ctx, name) {
 
 // Lists the drawing's views with their view -> sheet matrices. Onshape's
 // /views endpoint is tried first; the full drawing JSON export is the fallback.
+// Which Onshape routes work is remembered (until the server restarts), so a
+// route that fails isn't tried again, and paid for again, on every drawing.
+const routes = { views: 'unknown', geometry: 'drawings' };
+
 async function readViews(api, ctx, eid, exportJson) {
   let list = [];
-  try {
-    const r = await api(`/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${eid}/views`);
-    list = Array.isArray(r) ? r : (r.items || r.views || []);
-  } catch (err) { /* fall back below */ }
+  if (routes.views !== 'no') {
+    try {
+      const r = await api(`/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${eid}/views`);
+      list = Array.isArray(r) ? r : (r.items || r.views || []);
+    } catch (err) { /* fall back below */ }
+    const usable = list.length && list.some((v) => v.viewToPaperMatrix);
+    // Only give up on /views for good once it has answered without matrices.
+    if (usable) routes.views = 'yes';
+    else if (list.length) routes.views = 'no';
+  }
   if (!list.length || !list.some((v) => v.viewToPaperMatrix)) {
     const json = await exportJson();
     list = [];
@@ -855,13 +866,19 @@ function matchViews(plan, list, created) {
 }
 
 async function viewGeometry(api, ctx, eid, viewId) {
-  try {
-    const r = await api(`/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${eid}/views/${viewId}/jsongeometry`);
-    return r.bodyData || [];
-  } catch (err) {
-    const r = await api(`/appelements/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${eid}/views/${viewId}/jsongeometry`);
-    return r.bodyData || [];
+  const order = routes.geometry === 'drawings' ? ['drawings', 'appelements'] : ['appelements', 'drawings'];
+  let lastErr;
+  for (const route of order) {
+    try {
+      const r = await api(`/${route}/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${eid}/views/${viewId}/jsongeometry`);
+      routes.geometry = route;
+      return r.bodyData || [];
+    } catch (err) {
+      lastErr = err;
+      if (err.status === 401 || err.status === 402) throw err;
+    }
   }
+  throw lastErr;
 }
 
 // The whole job. Returns { drawingId, name, plan, warnings }.
