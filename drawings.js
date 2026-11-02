@@ -219,8 +219,9 @@ function planDrawing(info, { qty = 1, material = '', partNumber = '', partName =
   const H = info.ext[info.vertical];
   const D = info.ext[3 - info.horizontal - info.vertical];
   const { orientation, rotation } = viewSetup(info);
-  // First line: what the part is (the LUNA number and name).
-  const notes = [[partNumber, partName].filter(Boolean).join(' - '), `Qty: ${qty} PCS`].filter(Boolean);
+  // The part number and name go in the title block (the part's own
+  // properties, filled by the server), not in these notes.
+  const notes = [`Qty: ${qty} PCS`];
   const roomW = SHEET.right - SHEET.left;
   const roomH = SHEET.top - SHEET.bottom;
   let views = null;
