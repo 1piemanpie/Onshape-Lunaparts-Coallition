@@ -2038,12 +2038,12 @@
   }
 
   let toastTimer = null;
-  function showToast(message) {
+  function showToast(message, ms = 1800) {
     const toast = el('toast');
     toast.textContent = message;
     toast.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), ms);
   }
 
   function flashButton(button) {
@@ -2092,7 +2092,7 @@
           quantity: part.quantity,
           material: part.material,
         });
-        if (made) { job.drawingId = made.drawingId; job.drawingNeedsCheck = Boolean(made.needsCheck); }
+        if (made && !made.failed) { job.drawingId = made.drawingId; job.drawingNeedsCheck = Boolean(made.needsCheck); }
       }
 
       if (!job.wantDxf && !job.drawingId && !job.wantStep) {
@@ -2281,7 +2281,7 @@
       return body;
     } catch (err) {
       log(`Couldn't make a drawing for ${partNumber}: ${err.message}`, 'error');
-      return null;
+      return { failed: true, error: err.message };
     }
   }
 
@@ -2298,9 +2298,13 @@
     });
     button.disabled = false;
     button.textContent = 'MAKE DRAWING';
+    if (made && made.failed) {
+      showToast(`Drawing failed: ${made.error}`, 6000);
+      return;
+    }
     if (made && currentPart() === part) {
       drawingSelect.value = made.drawingId;
-      showToast(made.existing ? `Using ${made.name}` : `\u2713 Made ${made.name}`);
+      showToast(made.existing ? `Already has ${made.name}, using that one` : `\u2713 Made ${made.name}`, 4000);
     }
     updateAttachHint();
   }
