@@ -935,11 +935,17 @@
       const ids = selections.map((s) => s.selectionId).filter(Boolean);
       const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
       lastSelectionIds = new Set(ids);
-      if (added.length) findRowForSelection(added);
       if (namer.active) {
-        if (state.kind !== 'assembly') for (const s of added) namer.enqueue(s.selectionId);
+        // Each part clicked in the 3D view gets the next number, in click
+        // order. In an assembly the click is matched to its row first.
+        for (const s of added) {
+          if (state.kind !== 'assembly') { namer.enqueue(s.selectionId); continue; }
+          const part = partForSelection(s);
+          if (part) namer.enqueueRow(part.partId);
+        }
         return;
       }
+      if (added.length) findRowForSelection(added);
       const picked = selections.find((s) => s.selectionId);
       if (picked) {
         lookUpSelection(picked);
@@ -1106,12 +1112,17 @@
 
   // Clicking a part in the assembly's 3D view finds its row: opens its fold,
   // scrolls to it and lights it up, and shows its picture.
+  // The assembly part a 3D-view click (OCCURRENCE selection) belongs to.
+  function partForSelection(sel) {
+    const path = (sel.occurrencePath || []).join('/');
+    return state.parts.find((p) => (p.occurrences || []).some((occ) => (path && occ.join('/') === path)
+      || occ[occ.length - 1] === sel.selectionId)) || null;
+  }
+
   function findRowForSelection(selections) {
     if (state.kind !== 'assembly' || state.screen !== 'list') return;
     for (const sel of [...selections].reverse()) {
-      const path = (sel.occurrencePath || []).join('/');
-      const part = state.parts.find((p) => (p.occurrences || []).some((occ) => (path && occ.join('/') === path)
-        || occ[occ.length - 1] === sel.selectionId));
+      const part = partForSelection(sel);
       if (!part) continue;
       const row = document.querySelector(`.part-row[data-part-id="${CSS.escape(part.partId)}"]`);
       if (!row) return;
