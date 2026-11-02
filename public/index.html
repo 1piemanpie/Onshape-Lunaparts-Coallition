@@ -229,6 +229,25 @@
   }
   .tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .qty { font-weight: 700; color: var(--text); }
+  /* SEE: a picture of the part, since Onshape can't highlight inside an assembly. */
+  .see {
+    font-family: var(--heading); font-weight: 700; font-size: 10.5px; letter-spacing: 0.08em;
+    color: var(--text); background: #ffffff; border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; cursor: pointer; flex-shrink: 0;
+  }
+  .see:hover, .see.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  /* A row found by clicking the part in the 3D view. */
+  .part-row.found { background: var(--accent); color: #ffffff; transition: background 0.3s; }
+  .part-row.found .part-name { color: var(--accent-ink); }
+  .part-row.found .part-sub, .part-row.found .qty { color: #e4e4e7; }
+  .peek {
+    position: fixed; z-index: 50; width: 190px; background: #ffffff; border: 1px solid var(--accent);
+    border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); padding: 6px; pointer-events: none;
+  }
+  .peek[hidden] { display: none; }
+  .peek img { display: block; width: 100%; height: 160px; object-fit: contain; background: #fafafa; border-radius: 4px; }
+  .peek .peek-name { font-size: 12px; font-weight: 700; margin-top: 5px; }
+  .peek .peek-sub { font-size: 11px; color: var(--muted); }
   /* Assembly hardware sits under a fold at the bottom of the list. */
   .hw-fold { border-top: 1px solid var(--line); }
   .hw-fold summary {
@@ -635,6 +654,7 @@
 
   // ---- Screens -------------------------------------------------------------
   function showScreen(name) {
+    try { peek.reset(); } catch (err) { /* not set up yet during start-up */ }
     for (const s of ['list', 'card', 'done']) {
       el(`${s}Screen`).hidden = s !== name;
       el(`${s}Footer`).hidden = s !== name;
@@ -734,6 +754,7 @@
   }
 
   function renderPartList() {
+    try { peek.reset(); } catch (err) { /* not set up yet during start-up */ }
     const list = el('partList');
     list.innerHTML = '';
     if (!state.parts.length) {
@@ -809,7 +830,20 @@
         namer.enqueueRow(part.partId);
       });
 
-      row.append(box, text, tag);
+      const see = document.createElement('button');
+      see.type = 'button';
+      see.className = 'see';
+      see.textContent = 'SEE';
+      see.title = 'Show a picture of this part';
+      see.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        peek.toggle(part, row);
+      });
+      row.addEventListener('mouseenter', () => peek.hoverStart(part, row));
+      row.addEventListener('mouseleave', () => peek.hoverEnd());
+
+      row.append(box, text, see, tag);
       (folds[section(part)] || list).appendChild(row);
     }
     if (folds.uploaded) list.appendChild(folds.uploaded);
@@ -892,6 +926,7 @@
       const ids = selections.map((s) => s.selectionId).filter(Boolean);
       const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
       lastSelectionIds = new Set(ids);
+      if (added.length) findRowForSelection(added);
       if (namer.active) {
         if (state.kind !== 'assembly') for (const s of added) namer.enqueue(s.selectionId);
         return;
@@ -961,6 +996,98 @@
     const row = document.querySelector(`.part-row[data-part-id="${CSS.escape(sel.partId)}"]`);
     if (row) row.scrollIntoView({ block: 'nearest' });
     log(`Ticked ${sel.name}${sel.faceId ? ' (with the clicked face for its DXF)' : ''}.`, 'success');
+  }
+
+  // ---- Which part is which -------------------------------------------------
+  // Hovering a row (or tapping SEE) shows a picture of the part and its size.
+  // Onshape won't let an app highlight a part inside an assembly, so this is
+  // the safe way to tell rows like "Shaft" apart.
+  const peek = {
+    box: null,
+    pinned: null,
+    timer: null,
+    shown: null,
+    ensureBox() {
+      if (this.box) return this.box;
+      this.box = document.createElement('div');
+      this.box.className = 'peek';
+      this.box.hidden = true;
+      this.box.innerHTML = '<img alt=""><div class="peek-name"></div><div class="peek-sub"></div>';
+      document.body.appendChild(this.box);
+      return this.box;
+    },
+    async show(part, row) {
+      const box = this.ensureBox();
+      this.shown = part.partId;
+      const img = box.querySelector('img');
+      img.src = `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
+      img.alt = part.name;
+      box.querySelector('.peek-name').textContent = lunaNumberFor(part) || part.name;
+      const sub = box.querySelector('.peek-sub');
+      sub.textContent = [part.material, part.quantity > 1 ? `\u00d7${part.quantity}` : ''].filter(Boolean).join(' \u00b7 ') || ' ';
+      const rect = row.getBoundingClientRect();
+      const top = rect.bottom + 230 < window.innerHeight ? rect.bottom + 4 : Math.max(4, rect.top - 234);
+      box.style.top = `${top}px`;
+      box.style.left = `${Math.max(4, Math.min(window.innerWidth - 194, rect.right - 194))}px`;
+      box.hidden = false;
+      if (!part.dims) {
+        try {
+          const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
+          part.dims = body.dims;
+          if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+        } catch (err) { part.dims = null; }
+      }
+      if (this.shown === part.partId && part.dims) {
+        const size = part.dims.map((d) => d.toFixed(2)).join(' \u00d7 ');
+        sub.textContent = [`${size} in`, sub.textContent.trim()].filter(Boolean).join(' \u00b7 ');
+      }
+    },
+    hide() {
+      if (this.box) this.box.hidden = true;
+      this.shown = null;
+      document.querySelectorAll('.see.on').forEach((b) => b.classList.remove('on'));
+    },
+    toggle(part, row) {
+      clearTimeout(this.timer);
+      if (this.pinned === part.partId) { this.pinned = null; this.hide(); return; }
+      this.hide();
+      this.pinned = part.partId;
+      row.querySelector('.see').classList.add('on');
+      this.show(part, row);
+    },
+    hoverStart(part, row) {
+      if (this.pinned) return;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.show(part, row), 350);
+    },
+    hoverEnd() {
+      clearTimeout(this.timer);
+      if (!this.pinned) this.hide();
+    },
+    reset() { this.pinned = null; clearTimeout(this.timer); this.hide(); },
+  };
+
+  // Clicking a part in the assembly's 3D view finds its row: opens its fold,
+  // scrolls to it and lights it up, and shows its picture.
+  function findRowForSelection(selections) {
+    if (state.kind !== 'assembly' || state.screen !== 'list') return;
+    for (const sel of [...selections].reverse()) {
+      const path = (sel.occurrencePath || []).join('/');
+      const part = state.parts.find((p) => (p.occurrences || []).some((occ) => (path && occ.join('/') === path)
+        || occ[occ.length - 1] === sel.selectionId));
+      if (!part) continue;
+      const row = document.querySelector(`.part-row[data-part-id="${CSS.escape(part.partId)}"]`);
+      if (!row) return;
+      const fold = row.closest('details');
+      if (fold) fold.open = true;
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      document.querySelectorAll('.part-row.found').forEach((r) => r.classList.remove('found'));
+      row.classList.add('found');
+      setTimeout(() => row.classList.remove('found'), 2500);
+      peek.reset();
+      setTimeout(() => peek.toggle(part, row), 400);
+      return;
+    }
   }
 
   // ---- Part namer ----------------------------------------------------------
