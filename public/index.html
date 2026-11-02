@@ -1244,21 +1244,22 @@
     return out;
   }
   // The name a part should get if a sharing twin is already numbered.
-  function twinNumber(partId, series) {
+  // `ignore` skips twins whose current name is about to be replaced.
+  function twinNumber(partId, series, ignore = () => false) {
     const group = state.twinGroups.find((g) => g.shares && g.ids.includes(partId));
     if (!group) return null;
-    const named = state.parts.find((p) => p.partId !== partId
+    const named = state.parts.find((p) => p.partId !== partId && !ignore(p)
       && [p.partId, ...(p.mergedIds || [])].some((id) => group.ids.includes(id)) && series.test(p.name));
     return named ? named.name : null;
   }
   // How many new numbers naming these parts uses: a twin of a part that is
   // already numbered (or of one earlier in the list) reuses that number.
-  function newNumbersFor(partIds, series) {
+  function newNumbersFor(partIds, series, ignore) {
     const used = new Set();
     let count = 0;
     for (const partId of partIds) {
       const group = partId && state.twinGroups.find((g) => g.shares && g.ids.includes(partId));
-      if (group && (used.has(group) || twinNumber(partId, series))) continue;
+      if (group && (used.has(group) || twinNumber(partId, series, ignore))) continue;
       if (group) used.add(group);
       count += 1;
     }
@@ -1356,7 +1357,7 @@
       if (this.finishing) return;
       const todo = this.todo();
       const n = todo.length;
-      const fresh = newNumbersFor(todo.map((item) => item.partId), this.series());
+      const fresh = newNumbersFor(todo.map((item) => item.partId), this.series(), (p) => this.stale(p));
       el('namerDone').textContent = n ? `NAME ${n} & DONE` : 'DONE';
       if (n && this.next) {
         const last = this.format(this.next + Math.max(fresh, 1) - 1);
@@ -1365,6 +1366,8 @@
         const notes = [
           this.skippedLinked ? `${this.skippedLinked} linked FRC Design App part${this.skippedLinked === 1 ? '' : 's'} left out (they get their number on the upload card)` : '',
           this.pending.length > n ? `${this.pending.length - n} already numbered ${this.prefix()}… and left as they are` : '',
+          this.startOver && this.alreadyInSeries ? `starting over: ${this.alreadyInSeries === 1 ? '1 part that already had' : `${this.alreadyInSeries} parts that already had`} a ${this.prefix()} number ${this.alreadyInSeries === 1 ? 'gets' : 'get'} a new one too, because most of the ticked parts use a different name type` : '',
+          this.next > 1 && this.lunaHighest >= this.next - 1 ? `${this.format(1)} to ${this.format(this.next - 1)} are already used in this LUNA project` : '',
           n > fresh ? `${n - fresh} same-shape twin${n - fresh === 1 ? '' : 's'} share${n - fresh === 1 ? 's' : ''} a number with ${n - fresh === 1 ? 'its' : 'their'} match` : '',
         ].filter(Boolean);
         const range = fresh > 1 ? ` to ${last}, ${order}` : '';
@@ -1380,9 +1383,31 @@
       return this.pending.filter((item) => {
         if (!item.partId) return true;
         const part = state.parts.find((p) => p.partId === item.partId);
-        return part && !series.test(part.name);
+        if (!part) return false;
+        if (this.startOver) return !this.named.some((n) => n.partId === item.partId);
+        return !series.test(part.name);
       });
     },
+    // A new name type: when most ticked parts don't use this prefix yet,
+    // every ticked part is renumbered from the start (Micah, 2026-11-02).
+    // When most already do, numbering carries on and they're left alone.
+    get startOver() {
+      const ids = this.pending.filter((item) => item.partId).map((item) => item.partId);
+      return ids.length > 0 && this.alreadyInSeries * 2 < ids.length;
+    },
+    get alreadyInSeries() {
+      const series = this.series();
+      return this.pending.filter((item) => {
+        const part = item.partId && state.parts.find((p) => p.partId === item.partId);
+        return part && series.test(part.name);
+      }).length;
+    },
+    // A ticked part's old number doesn't count while it's being renumbered.
+    stale(part) {
+      return this.startOver && this.pending.some((item) => item.partId === part.partId)
+        && !this.named.some((n) => n.partId === part.partId);
+    },
+    lunaHighest: 0,
     pendingSource: '',
     finishing: false,
     pending: [],  // parts already selected when NAME was opened
@@ -1417,7 +1442,6 @@
         if (!this.next) await this.loadNext();
         if (!this.next) return; // prefix problem; the message says why
         const todo = this.todo();
-        this.pending = [];
         this.finishing = true;
         el('namerDone').disabled = true;
         let done = 0;
@@ -1431,7 +1455,10 @@
           else this.enqueue(item.selectionId);
         }
         await this.chain;
+        this.pending = [];
         this.finishing = false;
+        mergeSameNamed();
+        renderPartList();
         el('namerDone').disabled = false;
       }
       this.close();
@@ -1470,9 +1497,11 @@
       try {
         const query = new URLSearchParams({ prefix });
         if (projectSelect.value) query.set('project_id', projectSelect.value);
+        if (this.startOver) query.set('exclude', this.pending.map((item) => item.partId).filter(Boolean).join(','));
         const body = await getJson(`/api/onshape/next-number?${query}`);
         if (prefix !== this.prefix()) return; // typed again meanwhile
         this.next = body.next;
+        this.lunaHighest = body.lunaHighest || 0;
         try { localStorage.setItem(this.prefixKey(), prefix); } catch (err) { /* storage blocked */ }
         this.render();
       } catch (err) {
@@ -1494,7 +1523,7 @@
         this.linkedMessage(part);
         return;
       }
-      const shared = twinNumber(partId, this.series());
+      const shared = twinNumber(partId, this.series(), (p) => this.stale(p));
       if (shared) { await this.rename(part.partId, shared, part.name, { keepNext: true }); return; }
       const newName = this.format(this.next);
       if (part.name === newName) { this.next += 1; this.render(); return; }
@@ -1513,7 +1542,7 @@
         return;
       }
       if (this.named.some((n) => n.partId === part.partId)) return; // another face of a part already named
-      const shared = twinNumber(part.partId, this.series());
+      const shared = twinNumber(part.partId, this.series(), (p) => this.stale(p));
       if (shared) { await this.rename(part.partId, shared, part.name, { keepNext: true }); return; }
       const newName = this.format(this.next);
       if (part.name === newName) { this.next += 1; this.render(); return; }
@@ -1570,7 +1599,7 @@
         showToast(`\u2713 Named ${newName}`);
       }
       this.render();
-      if (!undo) mergeSameNamed();
+      if (!undo && !this.finishing) mergeSameNamed(); // a batch merges once at the end
       renderPartList();
       return true;
     },
