@@ -844,12 +844,16 @@ app.get('/api/onshape/next-number', async (req, res) => {
   if (!NAME_PREFIX.test(prefix)) return res.status(400).json({ error: 'Use letters, numbers and dashes for the prefix, like 26O-E.' });
   const projectId = Number(req.query.project_id);
 
+  // Parts about to be renumbered don't hold on to their old numbers.
+  const exclude = new Set(String(req.query.exclude || '').split(',').filter(Boolean).slice(0, 1000));
+
   const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\b`, 'i');
   const numbers = [];
+  let lunaHighest = 0;
   try {
     const names = await elementType(req) === 'ASSEMBLY'
-      ? (await getAssemblyParts(req, { refresh: true })).parts.map((p) => p.name)
-      : [...(await getPartIndex(req, dwe, { refresh: true })).partsById.values()].map((p) => p.name);
+      ? (await getAssemblyParts(req, { refresh: true })).parts.filter((p) => !exclude.has(p.id)).map((p) => p.name)
+      : [...(await getPartIndex(req, dwe, { refresh: true })).partsById.values()].filter((p) => !exclude.has(p.partId)).map((p) => p.name);
     for (const name of names) {
       const m = String(name || '').match(pattern);
       if (m) numbers.push(Number(m[1]));
@@ -864,14 +868,14 @@ app.get('/api/onshape/next-number', async (req, res) => {
       const parts = await lunaGetAll(`parts?project_id=${projectId}`);
       for (const part of parts) {
         const m = String(part.part_number || '').match(pattern);
-        if (m) numbers.push(Number(m[1]));
+        if (m) { numbers.push(Number(m[1])); lunaHighest = Math.max(lunaHighest, Number(m[1])); }
       }
       checkedLuna = true;
     } catch (err) {
       console.error('LUNA Parts lookup for next number failed:', err);
     }
   }
-  res.json({ next: (numbers.length ? Math.max(...numbers) : 0) + 1, checkedLuna });
+  res.json({ next: (numbers.length ? Math.max(...numbers) : 0) + 1, checkedLuna, lunaHighest });
 });
 
 app.post('/api/onshape/rename', express.json(), async (req, res) => {
