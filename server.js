@@ -520,6 +520,39 @@ app.get('/api/onshape/part-shape', async (req, res) => {
   }
 });
 
+// A small isometric picture of one part, so a row like "Shaft" can be
+// identified without touching the 3D view (Onshape can't highlight a part
+// inside an assembly from an app; trying froze the feature list, PR #20).
+const partImages = new Map();
+app.get('/api/onshape/part-image', async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const partId = String(req.query.partId || '');
+  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+
+  try {
+    const { source, partId: sourcePartId } = await resolvePart(req, partId);
+    const key = `${sourceKey(req, source)}|${sourcePartId}`;
+    let png = partImages.get(key);
+    if (!png) {
+      const query = new URLSearchParams({
+        viewMatrix: 'isometric', outputHeight: '240', outputWidth: '240', pixelSize: '0', edges: 'show', useAntiAliasing: 'true',
+      });
+      const view = await onshapeFetch(req,
+        `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/shadedviews${sourceQuery(source, query)}`);
+      const base64 = view.images && view.images[0];
+      if (!base64) return res.status(404).json({ error: 'Onshape had no picture for this part.' });
+      png = Buffer.from(base64, 'base64');
+      if (partImages.size > 300) partImages.clear();
+      partImages.set(key, png);
+    }
+    res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=300').send(png);
+  } catch (err) {
+    console.error('Part image failed:', err.message);
+    res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
+  }
+});
+
 // Called when the panel opens so the first click is already fast.
 app.post('/api/onshape/warm', async (req, res) => {
   const dwe = currentDwe(req);
