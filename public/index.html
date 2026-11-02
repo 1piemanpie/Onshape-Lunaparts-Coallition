@@ -870,16 +870,18 @@
         sub.appendChild(qty);
       }
       text.append(name, sub);
-      const twin = twinInfo(part);
-      if (twin) {
+      for (const twin of twinInfos(part)) {
         const line = document.createElement('span');
         const others = twin.others.map((p) => p.name).join(', ');
-        if (twin.shares) {
+        if (twin.group.relation === 'mirror') {
           line.className = 'twin';
-          line.textContent = `Same shape as ${others}: gets the same number`;
+          line.textContent = `Mirror image of ${others}: a left/right pair, so it gets its own number`;
+        } else if (twin.group.shares) {
+          line.className = 'twin';
+          line.textContent = `Same part as ${others}: gets the same number`;
         } else {
           line.className = 'twin ask';
-          line.textContent = `Same shape as ${others} (or a mirror). Same part?`;
+          line.textContent = `Same size as ${others}, but too symmetric to check. Same part?`;
           const yes = document.createElement('button');
           yes.type = 'button';
           yes.textContent = 'SAME PART';
@@ -1208,11 +1210,11 @@
   }
 
   // ---- Twins: different bodies with the same shape ----------------------
-  // The server compares volume, surface area and inertia. Flat plates and
-  // shafts that match share a number automatically (a mirrored plate is the
-  // same plate flipped). Anything else, like printed parts that may be left
-  // and right handed, waits for a SAME PART tap, remembered per document.
-  const PRINTED = /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|asa\b|abs\b|resin|print/i;
+  // The server finds parts of the same size, then lines them up point by
+  // point. Copies (and mirrors of symmetric parts) share a number
+  // automatically; true left/right mirror pairs keep separate numbers; parts
+  // too symmetric to line up wait for a SAME PART tap, remembered per
+  // document.
   const TEAM_NAME = /^(\d{2}[a-z]{1,3}-[a-z]{1,4}\d{1,4}|\d{2}-[a-z]{1,4}-\d{1,4}|[a-z]{1,3}-?\d{1,4})\b/i;
   state.twinGroups = [];
   function twinsKey() { return state.context ? `lunaTwins:${state.context.documentId}` : 'lunaTwins'; }
@@ -1220,13 +1222,15 @@
     try { return new Set(JSON.parse(localStorage.getItem(twinsKey()) || '[]')); } catch (err) { return new Set(); }
   }
   function groupKey(ids) { return [...ids].sort().join('+'); }
-  function twinInfo(part) {
+  function twinInfos(part) {
     const ids = [part.partId, ...(part.mergedIds || [])];
-    const group = state.twinGroups.find((g) => g.ids.some((id) => ids.includes(id)));
-    if (!group) return null;
-    const others = state.parts.filter((p) => p !== part && group.ids.some((id) => id === p.partId || (p.mergedIds || []).includes(id)));
-    if (!others.length) return null; // all merged into this row already
-    return { group, others, shares: group.shares };
+    const out = [];
+    for (const group of state.twinGroups) {
+      if (!group.ids.some((id) => ids.includes(id))) continue;
+      const others = state.parts.filter((p) => p !== part && group.ids.some((id) => id === p.partId || (p.mergedIds || []).includes(id)));
+      if (others.length) out.push({ group, others });
+    }
+    return out;
   }
   // The name a part should get if a sharing twin is already numbered.
   function twinNumber(partId, series) {
@@ -1268,13 +1272,19 @@
         body: JSON.stringify({ partIds: candidates.flatMap((p) => [p.partId, ...(p.mergedIds || [])]) }),
       });
       const confirmed = confirmedTwins();
-      state.twinGroups = body.groups.map((g) => {
-        const members = state.parts.filter((p) => g.ids.includes(p.partId));
-        const printed = members.some((p) => PRINTED.test(p.material || ''));
-        return { ids: g.ids, shape: g.shape, shares: (!printed && (g.shape === 'plate' || g.shape === 'shaft')) || confirmed.has(groupKey(g.ids)) };
-      });
+      state.twinGroups = body.groups.map((g) => ({
+        ids: g.ids,
+        relation: g.relation,
+        shares: g.relation === 'same' || (g.relation === 'unknown' && confirmed.has(groupKey(g.ids))),
+      }));
       if (state.twinGroups.length) {
-        log(`Found ${state.twinGroups.length} set${state.twinGroups.length === 1 ? '' : 's'} of same-shape parts.`);
+        const count = (r) => state.twinGroups.filter((g) => g.relation === r).length;
+        const bits = [
+          count('same') ? `${count('same')} set${count('same') === 1 ? '' : 's'} of copies (they share a number)` : '',
+          count('mirror') ? `${count('mirror')} left/right mirror pair${count('mirror') === 1 ? '' : 's'} (own numbers)` : '',
+          count('unknown') ? `${count('unknown')} to check by hand` : '',
+        ].filter(Boolean);
+        log(`Same-shape check: ${bits.join(', ')}.`);
         if (state.screen === 'list') renderPartList();
         if (namer.active) namer.render();
       }

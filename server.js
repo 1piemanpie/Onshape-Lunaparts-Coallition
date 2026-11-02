@@ -3,6 +3,7 @@ const session = require('express-session');
 const crypto = require('crypto');
 const path = require('path');
 const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace, REAM_UNDERSIZE_IN } = require('./dxf');
+const { compareBodies } = require('./twins');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -556,12 +557,12 @@ app.get('/api/onshape/part-image', async (req, res) => {
   }
 });
 
-// Twins: separate bodies with the same shape (a part copied or mirrored in
-// the Part Studio and given its own name) should share one part number.
-// Volume, surface area and the principal moments of inertia per unit mass
-// don't change when a part is moved, turned or mirrored, so equal values mean
-// the same shape. A mirror can't be told apart this way; the panel only
-// merges plates and shafts automatically and asks about everything else.
+// Twins: separate bodies with the same shape (a part copied in the Part
+// Studio and given its own name) should share one part number. Mass
+// properties find parts of the same size; twins.js then lines them up point
+// by point: a copy (or a mirror of a symmetric part) shares the number, a
+// true left/right mirror pair gets two numbers, and a part too symmetric to
+// line up is left for the user to decide (SAME PART).
 const massCache = new Map();
 function firstNumber(v) { return Array.isArray(v) ? Number(v[0]) : Number(v); }
 
@@ -595,10 +596,12 @@ function partMassProps(req, source) {
   return props;
 }
 
+// A first, cheap filter: copies agree to about 0.00001% in tests; 0.01%
+// leaves room for Onshape's rounding. The point check makes the real call.
 function sameShape(a, b) {
   const close = (x, y, tol) => Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y), 1e-12);
-  if (!(a.volume > 0) || !close(a.volume, b.volume, 0.002) || !close(a.area, b.area, 0.002)) return false;
-  if (a.moments && b.moments) return a.moments.every((m, i) => close(m, b.moments[i], 0.01));
+  if (!(a.volume > 0) || !close(a.volume, b.volume, 1e-4) || !close(a.area, b.area, 1e-4)) return false;
+  if (a.moments && b.moments) return a.moments.every((m, i) => close(m, b.moments[i], 1e-3));
   return true;
 }
 
@@ -634,7 +637,9 @@ app.post('/api/onshape/twins', express.json(), async (req, res) => {
       }
     }));
 
-    const groups = [];
+    // Same size by mass properties first (cheap), then line the parts up
+    // point by point to tell copies from mirror images and near-misses.
+    const sized = [];
     const used = new Set();
     for (let i = 0; i < fingerprints.length; i += 1) {
       if (used.has(i)) continue;
@@ -642,23 +647,41 @@ app.post('/api/onshape/twins', express.json(), async (req, res) => {
       for (let j = i + 1; j < fingerprints.length; j += 1) {
         if (!used.has(j) && sameShape(fingerprints[i].fp, fingerprints[j].fp)) { group.push(fingerprints[j]); used.add(j); }
       }
-      if (group.length > 1) groups.push(group);
+      if (group.length > 1) sized.push(group);
     }
 
-    // Plate or shaft (merged automatically) from the first member's size.
-    const out = [];
-    for (const group of groups) {
-      let shape = 'other';
+    const bodyOf = async (r) => {
       try {
-        const { source, partId } = group[0];
-        const box = await onshapeFetch(req,
-          `/parts/${source.dwe}/partid/${encodeURIComponent(partId)}/boundingboxes${sourceQuery(source)}`);
-        const [small, mid, long] = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
-          .map((m) => m / METERS_PER_INCH).sort((a, b) => a - b);
-        if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
-        else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
-      } catch (err) { /* treat as other: ask */ }
-      out.push({ ids: group.map((g) => g.id), shape });
+        const index = await getPartIndex(req, r.source);
+        return index.bodiesById.get(r.partId) || null;
+      } catch (err) {
+        return null;
+      }
+    };
+    const out = [];
+    for (const group of sized) {
+      // Copies collect into clusters; each pair of clusters is a mirror
+      // pair, unknown (ask), or different (left alone).
+      const clusters = [];
+      for (const member of group) {
+        const body = await bodyOf(member);
+        const relations = [];
+        let home = null;
+        for (const cluster of clusters) {
+          const relation = body && cluster.body ? compareBodies(cluster.body, body) : 'unknown';
+          if (relation === 'same') { home = cluster; break; }
+          relations.push({ cluster, relation });
+        }
+        if (home) { home.ids.push(member.id); continue; }
+        const cluster = { ids: [member.id], body, links: relations };
+        clusters.push(cluster);
+      }
+      for (const cluster of clusters) {
+        if (cluster.ids.length > 1) out.push({ ids: cluster.ids, relation: 'same' });
+        for (const { cluster: other, relation } of cluster.links) {
+          if (relation === 'mirror' || relation === 'unknown') out.push({ ids: [...other.ids, ...cluster.ids], relation });
+        }
+      }
     }
     res.json({ groups: out });
   } catch (err) {
