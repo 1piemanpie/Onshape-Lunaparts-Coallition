@@ -787,6 +787,43 @@
   }
 
   // ---- Parts checklist -----------------------------------------------------
+  // Parts marked COTS by hand, remembered per document in this browser.
+  function cotsStoreKey() { return state.context ? `lunaCots:${state.context.documentId}` : 'lunaCots'; }
+  function manualCotsSet() {
+    try { return new Set(JSON.parse(localStorage.getItem(cotsStoreKey()) || '[]')); } catch (err) { return new Set(); }
+  }
+  function cotsKeyOf(part) { return part.stableKey || part.partId; }
+  function applyManualCots() {
+    const marked = manualCotsSet();
+    for (const part of state.parts) {
+      if (!marked.has(cotsKeyOf(part)) || part.group === 'hardware') continue;
+      part.origGroup = part.group;
+      part.group = 'hardware';
+      part.manualCots = true;
+      state.checked.delete(part.partId);
+    }
+  }
+  function toggleCots(part) {
+    const marked = manualCotsSet();
+    const key = cotsKeyOf(part);
+    if (part.manualCots) {
+      marked.delete(key);
+      part.group = part.origGroup || 'other';
+      part.manualCots = false;
+      log(`${part.name} is back in the main list.`);
+    } else {
+      marked.add(key);
+      part.origGroup = part.group;
+      part.group = 'hardware';
+      part.manualCots = true;
+      state.checked.delete(part.partId);
+      log(`${part.name} moved to Hardware & COTS. Tap NOT COTS there to undo.`, 'success');
+    }
+    try { localStorage.setItem(cotsStoreKey(), JSON.stringify([...marked])); } catch (err) { /* storage blocked */ }
+    peek.reset();
+    renderPartList();
+  }
+
   async function loadParts(refresh = false) {
     const started = Date.now();
     state.partsLoaded = false;
@@ -794,6 +831,7 @@
     try {
       const body = await getJson(`/api/onshape/parts${refresh ? '?refresh=1' : ''}`);
       state.parts = body.parts;
+      applyManualCots();
       state.partsLoaded = true;
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
@@ -933,7 +971,24 @@
       row.addEventListener('mouseenter', () => peek.hoverStart(part, row));
       row.addEventListener('mouseleave', () => peek.hoverEnd());
 
-      row.append(box, text, see, tag);
+      // COTS: move a part into the Hardware & COTS fold by hand (and back).
+      let cots = null;
+      if (part.manualCots || (!isUploaded(part) && part.group !== 'hardware' && part.group !== 'block')) {
+        cots = document.createElement('button');
+        cots.type = 'button';
+        cots.className = 'see';
+        cots.textContent = part.manualCots ? 'NOT COTS' : 'COTS';
+        cots.title = part.manualCots
+          ? 'Put this part back in the main list'
+          : 'Bought part: move it to Hardware & COTS so it stops showing up';
+        cots.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleCots(part);
+        });
+      }
+
+      row.append(box, text, see, ...(cots ? [cots] : []), tag);
       (folds[section(part)] || list).appendChild(row);
     }
     if (folds.uploaded) list.appendChild(folds.uploaded);

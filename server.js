@@ -709,6 +709,16 @@ app.post('/api/onshape/warm', async (req, res) => {
 });
 
 // Every part in the Part Studio, for the panel's checklist.
+// Names a part the same way across edits and versions (the list's own id
+// changes whenever the document does), so the panel can remember choices
+// like "this is COTS".
+function stablePartKey(source, partId) {
+  const src = asSource(source);
+  const m = String(src.dwe || '').match(/^d\/([^/]+)\/[wvm]\/[^/]+\/e\/([^/]+)/);
+  const raw = m ? [m[1], m[2], partId, src.configuration || ''].join('|') : `${src.dwe}|${partId}`;
+  return crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16);
+}
+
 app.get('/api/onshape/parts', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
@@ -733,6 +743,7 @@ app.get('/api/onshape/parts', async (req, res) => {
           onshapeKey: isLocalSource(req.session.onshapeContext, p.source)
             ? undefined : linkedPartKey(req.session.onshapeContext, p.source, p.partId),
           occurrences: p.occurrences,
+          stableKey: stablePartKey(p.source, p.partId),
         })),
       });
     }
