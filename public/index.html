@@ -1174,6 +1174,10 @@
     }
   }
 
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   // ---- Part namer ----------------------------------------------------------
   // Press NAME, set the prefix (26O-E), then click parts in Onshape: each
   // new part clicked is renamed to the next number (26O-E001, 26O-E002...).
@@ -1199,26 +1203,57 @@
     render() {
       el('namerNext').textContent = this.next ? this.format(this.next) : '…';
       el('namerUndo').disabled = !this.named.length;
-      const n = this.pending.length;
+      if (this.finishing) return;
+      const todo = this.todo();
+      const n = todo.length;
       el('namerDone').textContent = n ? `NAME ${n} & DONE` : 'DONE';
       if (n && this.next) {
         const last = this.format(this.next + n - 1);
-        this.message(`${n} part${n === 1 ? ' is' : 's are'} already selected. Press NAME ${n} & DONE to number ${n === 1 ? 'it' : 'them'} ${this.format(this.next)}${n > 1 ? ` to ${last}, in the order you selected them` : ''}. Or click more parts first.${this.skippedLinked ? ` (${this.skippedLinked} linked FRC Design App part${this.skippedLinked === 1 ? '' : 's'} left out: those get their number on the upload card.)` : ''}`);
+        const how = this.pendingSource === 'ticked' ? 'ticked in the list' : 'selected in Onshape';
+        const order = this.pendingSource === 'ticked' ? 'in list order' : 'in the order you selected them';
+        const notes = [
+          this.skippedLinked ? `${this.skippedLinked} linked FRC Design App part${this.skippedLinked === 1 ? '' : 's'} left out (they get their number on the upload card)` : '',
+          this.pending.length > n ? `${this.pending.length - n} already numbered ${this.prefix()}… and left as they are` : '',
+        ].filter(Boolean);
+        this.message(`${n} part${n === 1 ? ' is' : 's are'} ${how}. Press NAME ${n} & DONE to number ${n === 1 ? 'it' : 'them'} ${this.format(this.next)}${n > 1 ? ` to ${last}, ${order}` : ''}.${notes.length ? ` (${notes.join('; ')}.)` : ''}`);
+      } else if (!n && this.pending.length && this.next) {
+        this.message(`The ${this.pendingSource === 'ticked' ? 'ticked' : 'selected'} parts already have ${this.prefix()} numbers. Click parts in Onshape (or tap them below) to number more.`);
       }
     },
+    // Pending parts that still need a number in the current series (a part
+    // already called e.g. 26O-E001 isn't renumbered when the prefix is 26O-E).
+    todo() {
+      const series = new RegExp(`^${escapeRegExp(this.prefix())}\\d+\\b`, 'i');
+      return this.pending.filter((item) => {
+        if (!item.partId) return true;
+        const part = state.parts.find((p) => p.partId === item.partId);
+        return part && !series.test(part.name);
+      });
+    },
+    pendingSource: '',
+    finishing: false,
     pending: [],  // parts already selected when NAME was opened
     skippedLinked: 0,
     // What was selected in Onshape before NAME opened, as parts to name on DONE.
     pendingFromSelection() {
-      const sels = state.currentSelections || [];
+      const sels = (state.currentSelections || []).filter((x) => x.selectionId);
       this.skippedLinked = 0;
-      if (state.kind !== 'assembly') return sels.map((s) => ({ selectionId: s.selectionId })).filter((x) => x.selectionId);
+      this.pendingSource = 'selection';
+      if (sels.length && state.kind !== 'assembly') return sels.map((x) => ({ selectionId: x.selectionId }));
+      let parts = [];
       const seen = new Set();
-      const out = [];
       for (const sel of sels) {
         const part = partForSelection(sel);
-        if (!part || seen.has(part.partId)) continue;
-        seen.add(part.partId);
+        if (part && !seen.has(part.partId)) { seen.add(part.partId); parts.push(part); }
+      }
+      // Nothing selected in Onshape: use the parts ticked in the list, in
+      // list order.
+      if (!parts.length && state.checked.size) {
+        this.pendingSource = 'ticked';
+        parts = state.parts.filter((p) => state.checked.has(p.partId));
+      }
+      const out = [];
+      for (const part of parts) {
         if (part.linked) this.skippedLinked += 1;
         else out.push({ partId: part.partId });
       }
@@ -1228,15 +1263,22 @@
       if (this.pending.length) {
         if (!this.next) await this.loadNext();
         if (!this.next) return; // prefix problem; the message says why
-        const todo = this.pending;
+        const todo = this.todo();
         this.pending = [];
+        this.finishing = true;
+        el('namerDone').disabled = true;
+        let done = 0;
         for (const item of todo) {
+          const step = () => {
+            done += 1;
+            el('namerDone').textContent = `NAMING ${done}/${todo.length}…`;
+          };
+          this.chain = this.chain.then(step);
           if (item.partId) this.enqueueRow(item.partId);
           else this.enqueue(item.selectionId);
         }
-        el('namerDone').disabled = true;
-        el('namerDone').textContent = 'NAMING…';
         await this.chain;
+        this.finishing = false;
         el('namerDone').disabled = false;
       }
       this.close();
