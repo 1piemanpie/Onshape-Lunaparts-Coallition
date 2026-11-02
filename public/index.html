@@ -782,10 +782,11 @@
       text.className = 'part-text';
       const name = document.createElement('span');
       name.className = 'part-name';
-      name.textContent = part.name;
+      const lunaNumber = lunaNumberFor(part);
+      name.textContent = lunaNumber || part.name;
       const sub = document.createElement('span');
       sub.className = 'part-sub';
-      sub.textContent = part.material || 'No material';
+      sub.textContent = lunaNumber ? `${part.name} \u00b7 ${part.material || 'No material'}` : (part.material || 'No material');
       if (part.quantity > 1) {
         const qty = document.createElement('span');
         qty.className = 'qty';
@@ -799,7 +800,7 @@
       tag.className = 'tag';
       tag.textContent = state.faces.has(part.partId) ? 'FACE' : (part.linked ? 'LINKED' : 'PART');
       tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected'
-        : (part.linked ? 'Linked from another document (e.g. FRC Design App). Derive it into one of your Part Studios to name it.' : '');
+        : (part.linked ? 'Linked from another document (e.g. FRC Design App). Onshape won\'t rename it, so its team number is kept in LUNA Parts.' : '');
 
       // While naming, tapping a row numbers that part instead of ticking it.
       row.addEventListener('click', (event) => {
@@ -972,7 +973,13 @@
     chain: Promise.resolve(),
     prefixKey() { return state.context ? `lunaPrefix:${state.context.documentId}` : 'lunaPrefix'; },
     prefix() { return el('namerPrefix').value.trim().toUpperCase(); },
-    format(n) { return `${this.prefix()}${String(n).padStart(3, '0')}`; },
+    format(n, prefix = this.prefix()) { return `${prefix}${String(n).padStart(3, '0')}`; },
+    // The prefix last used for this document, even when NAME isn't open.
+    savedPrefix() {
+      let saved = '';
+      try { saved = localStorage.getItem(this.prefixKey()) || ''; } catch (err) { /* storage blocked */ }
+      return (saved || this.prefix() || '26O-E').toUpperCase();
+    },
     message(text, kind = '') {
       const msg = el('namerMsg');
       msg.className = `namer-msg ${kind}`;
@@ -1044,7 +1051,7 @@
       await this.rename(part.partId, newName, part.name);
     },
     linkedMessage(part) {
-      this.message(`${part.name} is linked from another document (like FRC Design App), so Onshape won't let it be renamed. Derive it into one of your Part Studios, insert it from there, then name it.`, 'bad');
+      this.message(`${part.name} is linked from another document (like FRC Design App), so Onshape won't let it be renamed. It gets its team number on its upload card instead, and the panel shows that number from then on.`, 'bad');
     },
     async nameSelection(selectionId) {
       if (!this.active || !this.next) return;
@@ -1130,14 +1137,37 @@
   }
 
   // Part numbers already in LUNA (any project), for the "Already in LUNA" fold.
+  // Linked parts (FRC Design App shafts, spacers) keep their catalog name in
+  // Onshape; their team number is found in LUNA by the tag in its notes.
+  function lunaNumberFor(part) {
+    return (part.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(part.onshapeKey)) || '';
+  }
+
   function isUploaded(part) {
+    if (lunaNumberFor(part)) return true;
     return Boolean(state.uploaded && state.uploaded.has(String(part.name || '').trim().toUpperCase()));
+  }
+
+  // Next free team number for a linked part's card. Numbers handed out in
+  // this batch are skipped, since their uploads may not have finished yet.
+  const givenNumbers = new Set();
+  async function nextNumberForLinked(projectId) {
+    const prefix = namer.savedPrefix();
+    const query = new URLSearchParams({ prefix });
+    if (projectId) query.set('project_id', projectId);
+    const body = await getJson(`/api/onshape/next-number?${query}`);
+    let n = body.next;
+    while (givenNumbers.has(namer.format(n, prefix))) n += 1;
+    const number = namer.format(n, prefix);
+    givenNumbers.add(number);
+    return number;
   }
 
   async function loadUploaded() {
     try {
       const body = await getJson('/api/luna/part-numbers');
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
+      state.linkedNumbers = new Map(Object.entries(body.linked || {}));
       if (state.screen === 'list') renderPartList();
     } catch (err) {
       log(err.message, 'error');
@@ -1179,8 +1209,10 @@
     resetPartFields();
     // The Onshape part name is the team's part number (e.g. "E05"). The
     // LUNA "Name" is a separate description the user types.
-    const number = part.name;
-    el('cardTitle').textContent = number;
+    // Linked parts keep their catalog name; the number comes from LUNA, or
+    // the next free one in the series is filled in.
+    const number = part.linked ? lunaNumberFor(part) : part.name;
+    el('cardTitle').textContent = number || part.name;
     el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
     renderUploadProgress();
     el('partNumberInput').value = number;
@@ -1201,7 +1233,31 @@
     el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(number);
     updateAttachHint();
+    if (part.linked) {
+      el('nameInput').value = part.name;
+      if (!number) fillLinkedNumber(part);
+    }
     el('nameInput').focus();
+  }
+
+  async function fillLinkedNumber(part) {
+    el('partNumberInput').placeholder = 'Finding next number…';
+    try {
+      const number = await nextNumberForLinked(cardProjectSelect.value);
+      if (currentPart() !== part || el('partNumberInput').value) return;
+      el('partNumberInput').value = number;
+      el('cardTitle').textContent = number;
+      const auto = autoProject(number);
+      if (auto) {
+        cardProjectSelect.value = String(auto.project.id);
+        el('projectWhy').textContent = `(from ${auto.why})`;
+      }
+      log(`${part.name} is linked, so Onshape keeps its name. It gets ${number} in LUNA Parts.`);
+    } catch (err) {
+      log(`Couldn't pick a number for ${part.name}: ${err.message}`, 'error');
+    } finally {
+      el('partNumberInput').placeholder = 'Auto';
+    }
   }
 
   function applyToolGuess(part) {
@@ -1356,6 +1412,7 @@
       cutLength: value('cutLengthInput'),
       leadTimeDays: value('leadTimeInput'),
       description: value('descriptionInput'),
+      onshapePartId: currentPart() && currentPart().linked ? currentPartId() : '',
     };
 
     const missing = [
@@ -1436,6 +1493,10 @@
       if (created.partNumber) {
         if (!state.uploaded) state.uploaded = new Set();
         state.uploaded.add(String(created.partNumber).toUpperCase());
+        if (onshapePart && onshapePart.onshapeKey && part.onshapePartId) {
+          if (!state.linkedNumbers) state.linkedNumbers = new Map();
+          state.linkedNumbers.set(onshapePart.onshapeKey, created.partNumber);
+        }
       }
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
