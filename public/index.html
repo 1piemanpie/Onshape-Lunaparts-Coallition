@@ -762,7 +762,7 @@
     };
     foldFor('uploaded', 'ALREADY IN LUNA PARTS', state.parts.filter((p) => section(p) === 'uploaded'));
     foldFor('block', 'BLOCK CAD (DERIVED)', state.parts.filter((p) => section(p) === 'block'));
-    foldFor('hardware', 'HARDWARE', state.parts.filter((p) => section(p) === 'hardware'));
+    foldFor('hardware', 'HARDWARE & COTS', state.parts.filter((p) => section(p) === 'hardware'));
     for (const part of state.parts) {
       const row = document.createElement('label');
       row.className = state.checked.has(part.partId) ? 'part-row on' : 'part-row';

@@ -343,9 +343,15 @@ const HARDWARE_NAME = new RegExp([
   'zip ?tie', 'encoder', 'falcon', 'kraken', 'neo', 'vortex', 'cim', 'servo', 'gearbox', 'wheel',
 ].map((w) => `\\b${w}s?\\b`).join('|') + '|#\\d+-\\d+|\\d/\\d+-\\d+', 'i');
 
+// Hex shaft (incl. ThunderHex) and hex-bore spacers are bought, not made
+// (Micah, 2026-11-02), so they fold with the hardware unless someone has
+// given one a team part number.
+const COTS_STOCK_NAME = /thunder ?hex|\bhex\b.*\b(shaft|spacer)s?\b|\b(shaft|spacer)s?\b.*\bhex\b|hex[ -]?bore/i;
+
 function partGroup(name, standardContent) {
   if (HARDWARE_NAME.test(name)) return 'hardware';
   if (TEAM_PART_NAME.test(name)) return 'team';
+  if (COTS_STOCK_NAME.test(name)) return 'hardware';
   if (STOCK_NAME.test(name)) return 'stock';
   return standardContent ? 'hardware' : 'other';
 }
