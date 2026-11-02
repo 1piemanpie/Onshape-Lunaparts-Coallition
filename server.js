@@ -1145,6 +1145,11 @@ app.get('/api/onshape/drawings', async (req, res) => {
 // Makes an Onshape drawing for a part that doesn't have one yet, in the
 // team's layout for its type (see drawings.js). The new tab is named
 // "<part number> Drawing 1", so the panel's drawing matching picks it up.
+// Drawings being made right now, by document + part number. If the panel
+// reloads while a drawing is being made, it asks again; that ask waits for
+// the first one instead of making a second drawing.
+const drawingsInFlight = new Map();
+
 app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
   const ctx = req.session.onshapeContext;
   const dwe = currentDwe(req);
@@ -1156,6 +1161,19 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
   const material = String(b.material || '').slice(0, 80);
   if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
   if (!partNumber || partNumber.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
+
+  const flightKey = `${ctx.documentId}:${partNumber.split(/\s+/)[0].toUpperCase()}`;
+  const running = !b.force && drawingsInFlight.get(flightKey);
+  if (running) {
+    try {
+      const made = await running;
+      return res.json({ ...made, existing: true });
+    } catch (err) { /* that one failed; try again below */ }
+  }
+  let finish;
+  const flight = new Promise((resolve, reject) => { finish = { resolve, reject }; });
+  flight.catch(() => {});
+  drawingsInFlight.set(flightKey, flight);
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
@@ -1205,8 +1223,10 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     });
     // The document now has a new tab; the next Drawing list reads it again.
     elementLists.delete(docKeyOf(ctx));
+    finish.resolve(result);
     res.json(result);
   } catch (err) {
+    finish.reject(err);
     console.error('Make drawing failed:', err);
     if (err.status === 403) {
       return res.status(403).json({
@@ -1215,6 +1235,11 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
       });
     }
     res.status(502).json({ error: err.status === 401 || err.status === 402 ? onshapeErrorMessage(err) : err.status ? `Onshape couldn't make the drawing (${err.status}): ${String(err.message).split(': ').slice(1).join(': ').slice(0, 200)}` : err.message });
+  } finally {
+    // Early returns (an existing drawing, a bad part) settle it too, so
+    // anyone waiting asks again rather than waiting forever.
+    finish.reject(new Error('Drawing request ended.'));
+    if (drawingsInFlight.get(flightKey) === flight) drawingsInFlight.delete(flightKey);
   }
 });
 

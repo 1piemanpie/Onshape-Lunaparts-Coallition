@@ -295,6 +295,16 @@
   .hint.left { text-align: left; margin-top: 3px; }
   .hint.warn { color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 7px; }
   .hint:empty { display: none; }
+  /* ---- Saved parts and the drawing check ---- */
+  .banner.staged { background: var(--accent); border-color: var(--accent); color: #ffffff; margin: 0 0 8px; }
+  .banner.staged button { background: var(--accent-ink); color: #111111; }
+  .review-help { margin: 0 0 8px; }
+  .review-row { cursor: default; align-items: flex-start; }
+  .review-row .ok { display: flex; flex-direction: column; align-items: center; gap: 1px; font-family: var(--heading); font-weight: 700; font-size: 9.5px; letter-spacing: 0.08em; color: var(--muted); padding-top: 2px; cursor: pointer; }
+  .review-row .ok input:disabled + span { opacity: 0.4; }
+  .review-row.on .ok { color: var(--text); }
+  .review-btns { display: flex; flex-direction: column; gap: 4px; align-items: stretch; flex-shrink: 0; }
+  .review-btns a.see { text-decoration: none; text-align: center; }
   .check-row { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; text-transform: none; letter-spacing: normal; cursor: pointer; }
   .check-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); box-shadow: none; }
 
@@ -388,6 +398,11 @@
         <button id="namerDone" class="go" type="button">DONE</button>
       </div>
       <div id="namerMsg" class="namer-msg"></div>
+    </div>
+    <!-- Parts saved with SAVE & NEXT wait here until their drawings are checked. -->
+    <div id="stagedBar" class="banner staged" hidden>
+      <span id="stagedText"></span>
+      <button id="reviewBtn" type="button">CHECK &amp; UPLOAD &rarr;</button>
     </div>
     <div id="partList" class="part-list"><p class="chip-empty">Loading parts&hellip;</p></div>
   </section>
@@ -488,13 +503,10 @@
         <!-- Picked automatically from the part name (e.g. part E05 ->
              "E05 Drawing 1"); exported to PDF and attached on Upload, along
              with a DXF of the part's flat face. -->
-        <div class="drawing-row">
-          <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
-          <!-- Makes an Onshape drawing in the team's layout (see drawings.js). -->
-          <button id="makeDrawingBtn" class="mini" type="button" hidden>MAKE DRAWING</button>
-        </div>
+        <!-- Left on "Make a new drawing", SAVE makes one in Onshape in the
+             team's layout (see drawings.js), in the background. -->
+        <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
         <p id="attachHint" class="hint left"></p>
-        <label class="check-row"><input id="autoDrawInput" type="checkbox" checked /> Make a drawing on Upload if there isn't one</label>
         <label class="check-row"><input id="stepInput" type="checkbox" /> Also attach a STEP file</label>
       </div>
 
@@ -505,7 +517,18 @@
     </form>
   </section>
 
-  <!-- ---- Screen 3: what happened ---- -->
+  <!-- ---- Screen 3: check every saved part's drawing, then upload ---- -->
+  <section id="reviewScreen" hidden>
+    <div class="card-head">
+      <button id="reviewBackBtn" class="link" type="button">&larr; Parts</button>
+      <span id="reviewCount" class="badge"></span>
+    </div>
+    <h2 class="card-title">Check drawings</h2>
+    <p class="hint left review-help">Nothing is in LUNA Parts yet. Open each drawing, check it (fix it in Onshape if needed), then tick OK. Upload sends the ticked parts with their drawing PDFs and DXFs.</p>
+    <div id="reviewList" class="part-list"></div>
+  </section>
+
+  <!-- ---- Screen 4: what happened ---- -->
   <section id="doneScreen" hidden>
     <h2 id="doneTitle" class="card-title">Done</h2>
     <div id="doneList" class="part-list"></div>
@@ -528,7 +551,10 @@
   </div>
   <div id="cardFooter" class="footer-row" hidden>
     <button id="skipBtn" class="btn ghost" type="button">SKIP</button>
-    <button id="submitBtn" class="btn" type="button">&#8593; UPLOAD</button>
+    <button id="submitBtn" class="btn" type="button">SAVE &amp; NEXT &rarr;</button>
+  </div>
+  <div id="reviewFooter" class="footer-row" hidden>
+    <button id="uploadAllBtn" class="btn" type="button" disabled>&#8593; UPLOAD ALL</button>
   </div>
   <div id="doneFooter" class="footer-row" hidden>
     <button id="againBtn" class="btn" type="button">BACK TO PARTS</button>
@@ -554,6 +580,7 @@
     queue: [],             // partIds being stepped through
     step: 0,
     results: [],           // { name, outcome: 'created'|'skipped', detail, kind }
+    staged: [],            // parts saved with SAVE & NEXT, waiting for the drawing check (see "Saved parts")
     pendingSelection: null,
   };
 
@@ -707,7 +734,7 @@
 
   // ---- Screens -------------------------------------------------------------
   function showScreen(name) {
-    for (const s of ['list', 'card', 'done']) {
+    for (const s of ['list', 'card', 'review', 'done']) {
       el(`${s}Screen`).hidden = s !== name;
       el(`${s}Footer`).hidden = s !== name;
     }
@@ -977,6 +1004,11 @@
       const tag = document.createElement('span');
       tag.className = 'tag';
       tag.textContent = state.faces.has(part.partId) ? 'FACE' : (part.linked ? 'LINKED' : 'PART');
+      if (stagedFor(part.partId)) {
+        tag.textContent = 'SAVED';
+        tag.className = 'tag on';
+        tag.title = 'Saved and waiting for its drawing check. Tap CHECK & UPLOAD.';
+      }
       tag.title = state.faces.has(part.partId) ? 'The DXF will use the face you selected'
         : (part.linked ? 'Linked from another document (e.g. FRC Design App). Onshape won\'t rename it, so its team number is kept in LUNA Parts.' : '');
 
@@ -1011,6 +1043,7 @@
     if (folds.block) list.appendChild(folds.block);
     if (folds.hardware) list.appendChild(folds.hardware);
     updateListFooter();
+    renderStagedBar();
   }
 
   function updateListFooter() {
@@ -1661,8 +1694,10 @@
 
   // Runs once, when the parts list first arrives.
   function restoreProgress() {
+    restoreStaged();
     const data = readProgress();
     progressRestored = true;
+    renderStagedBar();
     if (!data) return;
     const ids = new Set(state.parts.map((p) => p.partId));
     for (const id of data.checked || []) if (ids.has(id)) state.checked.add(id);
@@ -1693,6 +1728,8 @@
         log(`Back on part ${state.step + 1} of ${state.queue.length}.`);
         saveProgress();
       });
+    } else if (data.screen === 'review' && state.staged.length) {
+      setTimeout(showReview, 0);
     } else if (data.screen === 'done' && state.results.length) {
       setTimeout(showDone, 0);
     }
@@ -1881,9 +1918,26 @@
     el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(number);
     updateAttachHint();
+    // A part saved before opens with what was typed then.
+    const saved = stagedFor(part.partId);
     if (part.linked) {
       el('nameInput').value = part.name;
-      if (!number) fillLinkedNumber(part);
+      if (!number && !saved) fillLinkedNumber(part);
+    }
+    if (saved) {
+      // Its drawing may not be on the list yet (it was made after the list loaded).
+      if (saved.drawing.id && ![...drawingSelect.options].some((o) => o.value === saved.drawing.id)) {
+        const option = document.createElement('option');
+        option.value = saved.drawing.id;
+        option.textContent = saved.drawing.name;
+        drawingSelect.appendChild(option);
+      }
+      for (const id of DRAFT_FIELDS) if (saved.values[id] !== undefined) el(id).value = saved.values[id];
+      el('stepInput').checked = Boolean(saved.wantStep);
+      el('cardTitle').textContent = saved.number;
+      state.toolTouched = true;
+      state.thicknessTouched = true;
+      updateAttachHint();
     }
     el('nameInput').focus();
   }
@@ -1996,6 +2050,8 @@
       void screen.offsetWidth; // restart the slide-in
       screen.classList.add('slide');
       window.scrollTo(0, 0);
+    } else if (state.staged.length) {
+      showReview();
     } else {
       showDone();
     }
@@ -2015,7 +2071,6 @@
     drawingSelect.value = '';
     // reset() unticks STEP; put back what this browser remembers.
     try { el('stepInput').checked = localStorage.getItem('lunaStep') === '1'; } catch (err) { /* storage blocked */ }
-    try { el('autoDrawInput').checked = localStorage.getItem('lunaAutoDraw') !== '0'; } catch (err) { /* storage blocked */ }
     showHint('');
   }
 
@@ -2034,15 +2089,79 @@
     updateListFooter();
   }
 
-  // ---- Upload: queue the part and move straight on --------------------------
-  // Creating the part and exporting its DXF/PDF takes a while, so Upload only
-  // checks the form, then the work runs in the background (two parts at a
-  // time) while the next part is filled in. Results show up on the summary.
-  const MAX_PARALLEL_UPLOADS = 2;
-  const uploadQueue = [];
-  let activeUploads = 0;
+  // ---- Saved parts: SAVE & NEXT, then check drawings, then upload all -------
+  // SAVE & NEXT keeps the card's details in this browser and makes the part's
+  // drawing in Onshape in the background. Nothing goes to LUNA Parts yet.
+  // When every part is saved, CHECK & UPLOAD lists them: open each drawing,
+  // tick OK, then UPLOAD ALL sends the ticked parts with their PDFs and DXFs.
+  //
+  // Saved in localStorage for this document + assembly (or Part Studio), so
+  // they survive Onshape reloading the panel, switching tabs, or closing the
+  // browser. Costs no Onshape or LUNA calls. Only this browser sees them.
+  var STAGED_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-  function uploadCard() {
+  function stagedKey() {
+    const c = state.context;
+    return c ? `lunaStaged:${c.documentId}:${c.elementId}` : '';
+  }
+
+  function stagedFor(partId) {
+    return state.staged.find((s) => s.partId === partId) || null;
+  }
+
+  function saveStaged() {
+    const key = stagedKey();
+    if (!key || !progressRestored) return;
+    try {
+      if (state.staged.length) localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), parts: state.staged }));
+      else localStorage.removeItem(key);
+    } catch (err) { /* storage blocked or full */ }
+    renderStagedBar();
+    if (state.screen === 'review') renderReview();
+  }
+
+  function unstage(partId) {
+    state.staged = state.staged.filter((s) => s.partId !== partId);
+    saveStaged();
+  }
+
+  // Runs once, when the parts list first arrives.
+  function restoreStaged() {
+    let data = null;
+    try { data = JSON.parse(localStorage.getItem(stagedKey()) || 'null'); } catch (err) { data = null; }
+    if (!data || !Array.isArray(data.parts) || Date.now() - data.savedAt > STAGED_MAX_AGE_MS) return;
+    state.staged = data.parts;
+    for (const s of state.staged) {
+      // Numbers handed out to linked parts stay taken.
+      if (s.number) givenNumbers.add(s.number);
+      if (s.uploading) {
+        // The panel closed mid-upload, so it may or may not be in LUNA.
+        s.uploading = false;
+        s.ok = false;
+        s.error = 'The upload stopped when the panel closed. Look in LUNA Parts first: if it’s there, tap REMOVE here.';
+      }
+      // A drawing that was being made when the panel closed: ask again. The
+      // server finds the one it already made (or is making) instead of making two.
+      if (s.drawing.state === 'making') queueDrawing(s.partId);
+    }
+    log(`${state.staged.length} saved part${state.staged.length === 1 ? '' : 's'} waiting for the drawing check.`);
+  }
+
+  function renderStagedBar() {
+    const bar = el('stagedBar');
+    const n = state.staged.length;
+    bar.hidden = !n;
+    if (!n) return;
+    const making = state.staged.filter((s) => s.drawing.state === 'making').length;
+    const ok = state.staged.filter((s) => s.ok).length;
+    el('stagedText').textContent = [`${n} part${n === 1 ? '' : 's'} saved`,
+      making ? `${making} drawing${making === 1 ? '' : 's'} being made` : '',
+      ok ? `${ok} checked` : ''].filter(Boolean).join(' · ');
+  }
+
+  // The card's details, as LUNA Parts wants them. Returns null (and says what's
+  // missing) when a required field is empty.
+  function readCard() {
     const value = (id) => el(id).value.trim();
     const part = {
       projectId: cardProjectSelect.value,
@@ -2061,7 +2180,6 @@
       description: value('descriptionInput'),
       onshapePartId: currentPart() && currentPart().linked ? currentPartId() : '',
     };
-
     const missing = [
       [!part.projectId, 'Project'],
       [!part.name, 'Name'],
@@ -2070,35 +2188,276 @@
     ].filter(([isMissing]) => isMissing).map(([, label]) => label);
     if (missing.length) {
       showHint(`Fill in: ${missing.join(', ')}`, 'bad');
-      return;
+      return null;
     }
+    return part;
+  }
 
+  function saveCard() {
+    const part = readCard();
+    if (!part) return;
     const onshapePart = currentPart();
+    const before = stagedFor(onshapePart.partId);
     const face = state.faces.get(onshapePart.partId) || {};
-    const result = {
-      name: part.partNumber || onshapePart.name,
-      outcome: 'pending',
-      detail: 'Waiting to upload…',
-      kind: '',
-    };
-    state.results.push(result);
-    // Unticked now so it isn't picked again; put back if the upload fails.
-    state.checked.delete(onshapePart.partId);
-    uploadQueue.push({
+    const values = {};
+    for (const id of DRAFT_FIELDS) values[id] = el(id).value;
+    const number = part.partNumber || onshapePart.name;
+
+    const choice = drawingSelect.value;
+    let drawing;
+    if (choice === NO_DRAWING || !canDraw(onshapePart)) drawing = { state: 'none' };
+    else if (choice) drawing = { state: 'ready', id: choice, name: (drawingSelect.selectedOptions[0] || {}).textContent || 'Drawing' };
+    else drawing = { state: 'making' };
+    // Saving again with the same drawing keeps what we knew about it.
+    if (before && before.drawing.id && before.drawing.id === drawing.id) drawing = before.drawing;
+    if (before && before.drawing.state === 'making' && drawing.state === 'making') drawing = before.drawing;
+
+    const entry = {
+      partId: onshapePart.partId,
+      onshape: { partId: onshapePart.partId, name: onshapePart.name, linked: Boolean(onshapePart.linked), onshapeKey: onshapePart.onshapeKey || '' },
+      number,
       part,
-      onshapePart,
+      values,
       faceId: face.faceId || null,
-      drawingId: drawingSelect.value,
-      autoDraw: el('autoDrawInput').checked && canDraw(onshapePart),
       wantDxf: wantsDxf(onshapePart),
       wantStep: el('stepInput').checked,
-      result,
-    });
-    log(`Queued ${result.name} for upload.`);
-    pumpUploads();
+      drawing,
+      ok: false, // saved again = check it again
+      error: '',
+      savedAt: Date.now(),
+    };
+    if (before) state.staged[state.staged.indexOf(before)] = entry;
+    else state.staged.push(entry);
+    // Unticked so it isn't picked again; it shows as SAVED on the list.
+    state.checked.delete(onshapePart.partId);
+    if (drawing.state === 'making') queueDrawing(entry.partId);
+    saveStaged();
+    log(`Saved ${number}${drawing.state === 'making' ? ', making its drawing in Onshape' : ''}. Nothing sent to LUNA yet.`);
     flashButton(el('submitBtn'));
-    showToast(`\u2713 ${result.name} is uploading`);
+    showToast(drawing.state === 'making' ? `✓ Saved ${number}, making its drawing` : `✓ Saved ${number}`);
     nextCard();
+  }
+
+  // Drawings are made one at a time, in the background, in save order.
+  const drawingQueue = [];
+  let drawingBusy = false;
+
+  function queueDrawing(partId) {
+    if (!drawingQueue.includes(partId)) drawingQueue.push(partId);
+    pumpDrawings();
+  }
+
+  async function pumpDrawings() {
+    if (drawingBusy) return;
+    const partId = drawingQueue.shift();
+    if (!partId) return;
+    drawingBusy = true;
+    try {
+      const entry = stagedFor(partId);
+      if (entry && entry.drawing.state === 'making') {
+        const onshapePart = state.parts.find((p) => p.partId === partId) || entry.onshape;
+        const made = await makeDrawingFor(onshapePart, {
+          partNumber: entry.number,
+          quantity: Number(entry.part.quantity) || 1,
+          material: entry.part.material,
+        });
+        // Look it up again: it may have been saved again or removed meanwhile.
+        const now = stagedFor(partId);
+        if (now && now.drawing.state === 'making') {
+          now.drawing = made && !made.failed
+            ? { state: 'ready', id: made.drawingId, name: made.name, existing: Boolean(made.existing),
+              needsCheck: Boolean(made.needsCheck), warnings: (made.warnings || []).slice(0, 5),
+              // What the title block was filled with, to spot later edits.
+              madeWith: made.existing ? null : { number: entry.number, quantity: String(entry.part.quantity), material: entry.part.material } }
+            : { state: 'failed', error: (made && made.error) || 'Unknown problem' };
+          if (now.drawing.id) now.values.drawingSelect = now.drawing.id;
+          saveStaged();
+          if (!now.drawing.id) showToast(`Drawing for ${now.number} failed`, 4000);
+        }
+      }
+    } finally {
+      drawingBusy = false;
+      pumpDrawings();
+    }
+  }
+
+  // ---- The drawing check ----------------------------------------------------
+  function showReview() {
+    clearHighlight();
+    showScreen('review');
+    renderReview();
+  }
+
+  function drawingUrl(drawingId) {
+    const c = state.context;
+    return `${ONSHAPE_ORIGIN}/documents/${c.documentId}/w/${c.workspaceId}/e/${drawingId}`;
+  }
+
+  function editStaged(partId) {
+    state.queue = [partId];
+    state.step = 0;
+    showScreen('card');
+    loadCard();
+  }
+
+  function renderReview() {
+    const list = el('reviewList');
+    list.innerHTML = '';
+    if (!state.staged.length) {
+      list.innerHTML = '<p class="chip-empty">No saved parts. Tick parts on the list, then CREATE PARTS.</p>';
+    }
+    for (const s of state.staged) {
+      const row = document.createElement('div');
+      row.className = s.ok ? 'part-row review-row on' : 'part-row review-row';
+
+      // OK tick: only once the drawing is there to check.
+      const okLabel = document.createElement('label');
+      okLabel.className = 'ok';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = s.ok;
+      box.disabled = s.uploading || s.drawing.state === 'making';
+      box.title = box.disabled ? 'Wait for the drawing' : 'I checked this part and its drawing';
+      box.addEventListener('change', () => { s.ok = box.checked; saveStaged(); });
+      const okText = document.createElement('span');
+      okText.textContent = 'OK';
+      okLabel.append(box, okText);
+
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = `${s.number} · ${s.part.name}`;
+      const info = document.createElement('span');
+      info.className = 'part-sub';
+      info.textContent = [`Qty ${s.part.quantity}`, s.part.material || 'No material',
+        s.wantDxf ? 'DXF' : 'no DXF', s.wantStep ? 'STEP' : ''].filter(Boolean).join(' · ');
+      const draw = document.createElement('span');
+      const d = s.drawing;
+      if (d.state === 'making') {
+        draw.className = 'part-sub';
+        draw.textContent = drawingQueue.includes(s.partId) ? 'Drawing waiting its turn…' : 'Making the drawing in Onshape…';
+      } else if (d.state === 'ready') {
+        draw.className = d.needsCheck ? 'part-sub bad' : 'part-sub good';
+        draw.textContent = `${d.name}${d.existing ? ' (already there)' : ''}${d.needsCheck ? ' · labels may overlap, check closely' : ''}`;
+      } else if (d.state === 'failed') {
+        draw.className = 'part-sub bad';
+        draw.textContent = `Drawing failed: ${d.error}`;
+      } else {
+        draw.className = 'part-sub';
+        draw.textContent = 'No drawing';
+      }
+      text.append(name, info, draw);
+      const was = d.state === 'ready' && d.madeWith;
+      const changed = was ? [
+        was.number !== s.number && `part number ${was.number}`,
+        was.quantity !== String(s.part.quantity) && `Qty ${was.quantity}`,
+        was.material !== s.part.material && `material ${was.material || '(none)'}`,
+      ].filter(Boolean) : [];
+      if (changed.length) {
+        const stale = document.createElement('span');
+        stale.className = 'part-sub bad';
+        stale.textContent = `The drawing's title block still says ${changed.join(', ')}. Fix it in Onshape.`;
+        text.appendChild(stale);
+      }
+      if (s.error) {
+        const err = document.createElement('span');
+        err.className = 'part-sub bad';
+        err.textContent = s.error;
+        text.appendChild(err);
+      }
+
+      const btns = document.createElement('span');
+      btns.className = 'review-btns';
+      if (d.state === 'ready' && state.context) {
+        const open = document.createElement('a');
+        open.className = 'see';
+        open.href = drawingUrl(d.id);
+        open.target = '_blank';
+        open.rel = 'noopener';
+        open.textContent = 'OPEN';
+        open.title = 'Open the drawing in a new browser tab. Come back to this tab when you’re done.';
+        btns.appendChild(open);
+      }
+      if (d.state === 'failed') {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'see';
+        retry.textContent = 'RETRY';
+        retry.addEventListener('click', () => {
+          s.drawing = { state: 'making' };
+          queueDrawing(s.partId);
+          saveStaged();
+        });
+        btns.appendChild(retry);
+      }
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'see';
+      edit.textContent = 'EDIT';
+      edit.disabled = s.uploading;
+      edit.addEventListener('click', () => editStaged(s.partId));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'see';
+      remove.textContent = 'REMOVE';
+      remove.title = 'Take it off this list (the Onshape drawing stays)';
+      remove.disabled = s.uploading;
+      remove.addEventListener('click', () => {
+        unstage(s.partId);
+        log(`Removed ${s.number} from the saved parts.`);
+      });
+      btns.append(edit, remove);
+
+      row.append(okLabel, text, btns);
+      list.appendChild(row);
+    }
+
+    const total = state.staged.length;
+    const ok = state.staged.filter((s) => s.ok && !s.uploading).length;
+    el('reviewCount').textContent = `${state.staged.filter((s) => s.ok).length} of ${total} OK`;
+    const button = el('uploadAllBtn');
+    button.disabled = ok === 0;
+    button.innerHTML = ok && ok === total ? `&#8593; UPLOAD ALL (${ok})` : `&#8593; UPLOAD ${ok} OK’D`;
+    if (state.screen === 'review') {
+      const making = state.staged.filter((s) => s.drawing.state === 'making').length;
+      showHint(making ? `${making} drawing${making === 1 ? ' is' : 's are'} still being made. You can check the others meanwhile.`
+        : (total && ok < total ? 'Parts without OK stay saved here for later.' : ''));
+    }
+  }
+
+  // ---- Upload: send the OK'd parts, two at a time ---------------------------
+  // Each part is created in LUNA, then its DXF, drawing PDF (exported from the
+  // drawing as it is now, so fixes made in Onshape are included) and STEP are
+  // attached. Results show on the summary.
+  const MAX_PARALLEL_UPLOADS = 2;
+  const uploadQueue = [];
+  let activeUploads = 0;
+
+  function uploadChecked() {
+    const ready = state.staged.filter((s) => s.ok && !s.uploading);
+    if (!ready.length) return;
+    // Uploads still running from the last batch stay on the summary.
+    state.results = state.results.filter((r) => r.outcome === 'pending');
+    for (const s of ready) {
+      s.uploading = true;
+      s.error = '';
+      const result = { name: s.number, outcome: 'pending', detail: 'Waiting to upload…', kind: '' };
+      state.results.push(result);
+      uploadQueue.push({
+        part: s.part,
+        onshapePart: state.parts.find((p) => p.partId === s.partId) || s.onshape,
+        faceId: s.faceId,
+        drawingId: s.drawing.state === 'ready' ? s.drawing.id : '',
+        wantDxf: s.wantDxf,
+        wantStep: s.wantStep,
+        result,
+      });
+    }
+    saveStaged();
+    log(`Uploading ${ready.length} part${ready.length === 1 ? '' : 's'} to LUNA Parts.`);
+    pumpUploads();
+    showDone();
   }
 
   let toastTimer = null;
@@ -2148,17 +2507,8 @@
       }
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      // Also wait for a drawing the MAKE DRAWING button started on this card.
-      if (!job.drawingId && (job.autoDraw || state.drawingRuns.has(job.onshapePart.partId))) {
-        result.detail = 'Making a drawing in Onshape…';
-        renderUploadProgress();
-        const made = await makeDrawingFor(job.onshapePart, {
-          partNumber: created.partNumber || part.partNumber || job.onshapePart.name,
-          quantity: part.quantity,
-          material: part.material,
-        });
-        if (made && !made.failed) { job.drawingId = made.drawingId; job.drawingNeedsCheck = Boolean(made.needsCheck); }
-      }
+      // It's in LUNA now, so it leaves the saved list (even if a file fails).
+      unstage(onshapePart.partId);
 
       if (!job.wantDxf && !job.drawingId && !job.wantStep) {
         result.outcome = 'created';
@@ -2170,15 +2520,22 @@
         const files = await attachFiles(created, job);
         result.outcome = 'created';
         result.detail = files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`;
-        if (job.drawingNeedsCheck) result.detail += ' (the new drawing needs a check)';
         result.kind = files.ok ? 'good' : 'bad';
       }
     } catch (err) {
-      // Nothing was created, so the part goes back on the checklist to retry.
+      // Nothing was created, so the part stays saved to try again.
       result.outcome = 'failed';
-      result.detail = err.message;
       result.kind = 'bad';
-      state.checked.add(onshapePart.partId);
+      const saved = stagedFor(onshapePart.partId);
+      if (saved) {
+        saved.uploading = false;
+        saved.error = `Upload failed: ${err.message}`;
+        result.detail = `${err.message} It’s still saved, so you can try again from CHECK & UPLOAD.`;
+        saveStaged();
+      } else {
+        result.detail = err.message;
+        state.checked.add(onshapePart.partId);
+      }
       if (state.screen === 'list') renderPartList();
       log(`${result.name}: ${err.message}`, 'error');
     }
@@ -2252,28 +2609,20 @@
         ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
         : 'DXF of the largest flat face';
     const noDxf = toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
-    const drawBtn = el('makeDrawingBtn');
-    const making = state.drawingRuns.has(part.partId);
-    drawBtn.hidden = (Boolean(drawingSelect.value) && !making) || !canDraw(part);
-    drawBtn.disabled = making;
-    drawBtn.textContent = making ? 'MAKING…' : 'MAKE DRAWING';
-    if (!drawingSelect.value && canDraw(part) && el('autoDrawInput').checked) {
-      attachHint.className = 'hint left';
+    const choice = drawingSelect.value;
+    const noDraw = choice === NO_DRAWING || !canDraw(part);
+    attachHint.className = 'hint left';
+    if (!noDraw && !choice) {
       attachHint.textContent = dxf
-        ? `Will make a drawing in Onshape, then attach: ${dxf} + drawing PDF.`
-        : `Will make a drawing in Onshape, then attach its PDF. ${noDxf}.`;
-      return;
-    }
-    if (drawingSelect.value) {
-      attachHint.className = 'hint left';
-      attachHint.textContent = dxf ? `Will attach: ${dxf} + drawing PDF.` : `Will attach: drawing PDF. ${noDxf}.`;
+        ? `SAVE makes a drawing in Onshape (nothing goes to LUNA yet). Upload later attaches: ${dxf} + drawing PDF.`
+        : `SAVE makes a drawing in Onshape (nothing goes to LUNA yet). Upload later attaches its PDF. ${noDxf}.`;
+    } else if (!noDraw) {
+      attachHint.textContent = dxf ? `Upload later attaches: ${dxf} + drawing PDF.` : `Upload later attaches the drawing PDF. ${noDxf}.`;
+    } else if (dxf) {
+      attachHint.textContent = `No drawing. Upload later attaches the ${dxf}.`;
     } else {
       attachHint.className = 'hint left bad';
-      const matched = (state.drawings || []).some((d) => firstWord(d.name) === firstWord(part.name));
-      const missing = matched ? 'No drawing chosen' : `No drawing found for ${part.name}`;
-      attachHint.textContent = dxf
-        ? `⚠ ${missing}. Only the ${dxf} will be attached.`
-        : `⚠ ${missing}, and ${noDxf.charAt(0).toLowerCase()}${noDxf.slice(1)}. Nothing will be attached.`;
+      attachHint.textContent = `⚠ No drawing, and ${noDxf.charAt(0).toLowerCase()}${noDxf.slice(1)}. Nothing will be attached.`;
     }
   }
 
@@ -2371,37 +2720,27 @@
     }
   }
 
-  async function makeDrawingNow() {
-    const part = currentPart();
-    if (!part) return;
-    const pending = makeDrawingFor(part, {
-      partNumber: el('partNumberInput').value.trim() || part.name,
-      quantity: Number(el('quantityInput').value) || 1,
-      material: el('materialInput').value.trim(),
-    });
-    updateAttachHint();
-    const made = await pending;
-    if (made && made.failed) {
-      showToast(`Drawing failed: ${made.error}`, 6000);
-      return;
-    }
-    if (made && currentPart() === part) {
-      drawingSelect.value = made.drawingId;
-      showToast(made.existing ? `Already has ${made.name}, using that one` : `\u2713 Made ${made.name}`, 4000);
-    }
-    updateAttachHint();
-  }
-
   // ---- Drawing picker ------------------------------------------------------
   async function loadDrawings() {
     try {
       const body = await getJson('/api/onshape/drawings');
       state.drawings = body.drawings;
-      fillSelect(drawingSelect, body.drawings, body.drawings.length ? 'No drawing' : 'No drawings in this document');
+      fillSelect(drawingSelect, body.drawings, 'Make a new drawing');
+      addNoDrawingOption();
     } catch (err) {
-      fillSelect(drawingSelect, [], 'Unavailable');
+      fillSelect(drawingSelect, [], 'Make a new drawing');
+      addNoDrawingOption();
       log(err.message, 'error');
     }
+  }
+
+  // "No drawing" for parts that don't need one (the blank choice makes one).
+  var NO_DRAWING = 'none';
+  function addNoDrawingOption() {
+    const option = document.createElement('option');
+    option.value = NO_DRAWING;
+    option.textContent = 'No drawing';
+    drawingSelect.insertBefore(option, drawingSelect.options[1] || null);    drawingSelect.disabled = false; // there's always a choice now
   }
 
   // Drawings are named after their part ("E05 Drawing 1" for part E05), so
@@ -2454,7 +2793,7 @@
   el('allBtn').addEventListener('click', () => {
     // ALL leaves hardware, block CAD and parts already in LUNA alone.
     for (const p of state.parts) {
-      if (p.group !== 'hardware' && p.group !== 'block' && !isUploaded(p)) state.checked.add(p.partId);
+      if (p.group !== 'hardware' && p.group !== 'block' && !isUploaded(p) && !stagedFor(p.partId)) state.checked.add(p.partId);
     }
     renderPartList();
   });
@@ -2464,7 +2803,10 @@
   });
   el('startBtn').addEventListener('click', () => { if (namer.active) namer.close(); startCards(); });
   el('skipBtn').addEventListener('click', skipCard);
-  el('submitBtn').addEventListener('click', uploadCard);
+  el('submitBtn').addEventListener('click', saveCard);
+  el('reviewBtn').addEventListener('click', showReview);
+  el('reviewBackBtn').addEventListener('click', () => { showScreen('list'); renderPartList(); });
+  el('uploadAllBtn').addEventListener('click', uploadChecked);
   el('backBtn').addEventListener('click', () => {
     clearHighlight();
     showScreen('list');
@@ -2475,13 +2817,6 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
-  el('makeDrawingBtn').addEventListener('click', makeDrawingNow);
-  // "Make a drawing on Upload" is remembered in this browser (on by default).
-  try { el('autoDrawInput').checked = localStorage.getItem('lunaAutoDraw') !== '0'; } catch (err) { /* storage blocked */ }
-  el('autoDrawInput').addEventListener('change', () => {
-    try { localStorage.setItem('lunaAutoDraw', el('autoDrawInput').checked ? '1' : '0'); } catch (err) { /* storage blocked */ }
-    updateAttachHint();
-  });
   toolSelect.addEventListener('change', () => { state.toolTouched = true; el('toolWhy').textContent = ''; updateAttachHint(); });
   thicknessSelect.addEventListener('change', () => { state.thicknessTouched = true; });
   cardProjectSelect.addEventListener('change', () => {
