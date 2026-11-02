@@ -2407,7 +2407,7 @@
         body: JSON.stringify({ partId: part.partId, partNumber, quantity, material }),
       });
       if (body.existing) log(`${partNumber} already has a drawing (${body.name}), so that one is used.`);
-      else log(`Made ${body.name} in Onshape (${body.plan.type}, scale ${body.plan.scale.join(':')}).`, 'success');
+      else log(`Made ${body.name} in Onshape (${body.plan.type}, scale ${body.plan.scale.join(':')}${body.calls ? `, ${body.calls} Onshape calls` : ''}).`, 'success');
       for (const w of body.warnings || []) log(`${body.name}: ${w}`, 'error');
       if (!state.drawings) state.drawings = [];
       if (!state.drawings.some((d) => d.id === body.drawingId)) {
