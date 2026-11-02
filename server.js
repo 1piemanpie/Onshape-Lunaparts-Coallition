@@ -150,8 +150,47 @@ app.get('/api/session', async (req, res) => {
 // ---- Onshape REST API ---------------------------------------------------
 const ONSHAPE_API_BASE = process.env.ONSHAPE_API_BASE || 'https://cad.onshape.com/api';
 
+// ---- Counting Onshape calls ----------------------------------------------
+// Onshape caps how many API calls the app gets a year, so every call is
+// counted: per panel action (sent back in the X-Onshape-Calls header, which
+// the panel adds up in its Sync log), and in total since the server started
+// (the Render log prints a line for every action that used any).
+const usage = { since: new Date().toISOString(), total: 0, byAction: {} };
+function actionName(req) {
+  return `${req.method} ${req.route ? req.route.path : req.path}`;
+}
+app.use('/api', (req, res, next) => {
+  req.onshapeCalls = 0;
+  const send = res.send.bind(res);
+  res.send = (body) => {
+    if (!res.headersSent) {
+      res.set('X-Onshape-Calls', String(req.onshapeCalls));
+      res.set('X-Onshape-Calls-Total', String(usage.total));
+    }
+    return send(body);
+  };
+  res.on('finish', () => {
+    if (req.onshapeCalls) console.log(`[onshape calls] ${actionName(req)}: ${req.onshapeCalls} (${usage.total} since the server started)`);
+  });
+  next();
+});
+
+// After a 402 (yearly limit used up) the server stops calling Onshape for a
+// while, so a panel left open can't keep hammering it.
+const LIMIT_PAUSE_MS = 10 * 60 * 1000;
+let limitHitAt = 0;
+
 // { raw: true } returns the file bytes (a Buffer) instead of parsed JSON.
 async function onshapeFetch(req, path, { raw = false, ...options } = {}) {
+  if (Date.now() - limitHitAt < LIMIT_PAUSE_MS) {
+    const err = new Error(`Onshape ${path} skipped: the yearly API limit was hit recently.`);
+    err.status = 402;
+    throw err;
+  }
+  req.onshapeCalls = (req.onshapeCalls || 0) + 1;
+  usage.total += 1;
+  const action = actionName(req);
+  usage.byAction[action] = (usage.byAction[action] || 0) + 1;
   const res = await fetch(`${ONSHAPE_API_BASE}${path}`, {
     ...options,
     headers: {
@@ -161,6 +200,7 @@ async function onshapeFetch(req, path, { raw = false, ...options } = {}) {
     },
   });
   if (!res.ok) {
+    if (res.status === 402) limitHitAt = Date.now();
     const err = new Error(`Onshape ${path} returned ${res.status}: ${await res.text()}`);
     err.status = res.status;
     throw err;
@@ -241,6 +281,127 @@ app.use(['/api/onshape', '/api/luna'], async (req, res, next) => {
   });
 });
 
+
+// How many Onshape calls the server has made since it last started.
+app.get('/api/usage', (req, res) => {
+  if (!req.session.onshapeTokens) return res.status(401).json({ error: 'Log in with Onshape first.' });
+  const byAction = Object.entries(usage.byAction).sort((a, b) => b[1] - a[1]);
+  res.json({ since: usage.since, total: usage.total, byAction: Object.fromEntries(byAction) });
+});
+
+// ---- Caching by document version -----------------------------------------
+// Every change to an Onshape document (in any tab) gives it a new
+// "microversion". One cheap call asks for the current one; if it hasn't
+// changed, everything read from the document before is still right, so it's
+// reused instead of asked for again: across panel opens, tab switches,
+// Refresh, and everyone on the team. Parts linked in from another document
+// at a version or microversion can never change, so they're kept for good.
+//
+// Within DOC_CHECK_MS of the last check the answer is trusted without asking
+// again, so one panel load (parts, drawings, twins) costs one check.
+const DOC_CHECK_MS = 20 * 1000;
+// "Check now" (Refresh, just before the cards, a click on a part not seen
+// before) still trusts a check from the last few seconds, so requests sent
+// together share one.
+const FRESH_MS = 3000;
+// Sessions that Onshape has confirmed can open each document.
+const verifiedSessions = new Map(); // session ID -> Set of "doc/workspace"
+const docVersions = new Map(); // "doc/workspace" -> { mv, at }
+const docChecks = new Map(); // in-flight checks, per session and document
+let microversionMisses = 0; // if the check itself keeps failing, stop using it
+let microversionUnsupported = false;
+
+function docKeyOf(ctx) { return `${ctx.documentId}/${ctx.workspaceId}`; }
+
+// A stand-in when the version can't be read: the old behaviour (this session
+// only, for 30 seconds).
+function timeStamp(req) { return `t${Math.floor(Date.now() / 30000)}|${req.sessionID}`; }
+
+async function docVersion(req, { maxAgeMs = DOC_CHECK_MS } = {}) {
+  const ctx = req.session.onshapeContext;
+  if (microversionUnsupported) return timeStamp(req);
+  const docKey = docKeyOf(ctx);
+  // A session only shares the team's cache once Onshape has said (with its
+  // own login) that it can open this document.
+  const verified = isVerified(req, docKey);
+  const known = docVersions.get(docKey);
+  if (known && verified && Date.now() - known.at <= maxAgeMs) return known.mv;
+
+  const flightKey = `${req.sessionID}|${docKey}`;
+  if (!docChecks.has(flightKey)) {
+    const check = onshapeFetch(req, `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/currentmicroversion`)
+      .then((body) => {
+        const mv = String((body && (body.microversion || body.microversionId)) || '');
+        if (!mv) throw new Error('Onshape sent no microversion.');
+        docVersions.set(docKey, { mv, at: Date.now() });
+        if (docVersions.size > 500) docVersions.clear();
+        microversionMisses = 0;
+        return mv;
+      })
+      .finally(() => docChecks.delete(flightKey));
+    docChecks.set(flightKey, check);
+  }
+  try {
+    const mv = await docChecks.get(flightKey);
+    if (!verifiedSessions.has(req.sessionID)) {
+      if (verifiedSessions.size > 5000) verifiedSessions.clear();
+      verifiedSessions.set(req.sessionID, new Set());
+    }
+    verifiedSessions.get(req.sessionID).add(docKey);
+    return mv;
+  } catch (err) {
+    if ([401, 402, 403].includes(err.status)) throw err;
+    console.error('Document version check failed:', err.message);
+    microversionMisses += 1;
+    if (microversionMisses >= 3) {
+      microversionUnsupported = true;
+      console.error('Version checks keep failing, so caching falls back to 30 seconds per session.');
+    }
+    return timeStamp(req);
+  }
+}
+
+// Parts at a saved version or microversion of another document never change.
+function isFrozenSource(src) { return /^d\/[^/]+\/[vm]\//.test(src.dwe); }
+
+function isVerified(req, docKey) {
+  const docs = verifiedSessions.get(req.sessionID);
+  return Boolean(docs && docs.has(docKey));
+}
+
+function canReuse(req) {
+  const ctx = req.session.onshapeContext;
+  return Boolean(ctx && isVerified(req, docKeyOf(ctx)));
+}
+
+function sourceStamp(req, src, opts) {
+  return isFrozenSource(src) ? 'frozen' : docVersion(req, opts);
+}
+
+// One cache per kind of data, each holding one entry per Part Studio (plus
+// `extra`, e.g. a part ID), replaced when the document changes.
+const CACHE_LIMITS = { parts: 300, bodies: 40, derived: 300, mass: 200, box: 3000 };
+const sourceCaches = Object.fromEntries(Object.keys(CACHE_LIMITS).map((k) => [k, new Map()]));
+
+// { reuse: true } answers from whatever is cached without checking the
+// document version first (used for 3D clicks; a click it can't place
+// checks properly).
+async function cachedForSource(req, kind, source, load, { extra = '', reuse = false, maxAgeMs } = {}) {
+  const src = asSource(source);
+  const cache = sourceCaches[kind];
+  const key = `${src.dwe}|${src.configuration || ''}|${extra}`;
+  const hit = cache.get(key);
+  if (hit && reuse && (hit.stamp === 'frozen' || canReuse(req))) return hit.value;
+  const stamp = await sourceStamp(req, src, { maxAgeMs });
+  const again = cache.get(key);
+  if (again && again.stamp === stamp) return again.value;
+  if (cache.size > CACHE_LIMITS[kind]) cache.clear();
+  const value = load(src);
+  cache.set(key, { stamp, value });
+  value.catch(() => { if (cache.get(key) && cache.get(key).value === value) cache.delete(key); });
+  return value;
+}
+
 // Onshape's selection messages give the ID of whatever was clicked: the
 // part itself (feature tree) or a face/edge/vertex (3D view). We work out
 // which part that belongs to, then return the part's name and material.
@@ -288,20 +449,15 @@ async function fetchDerivedPartIds(req, source) {
 }
 
 // Never fails: if Onshape won't say, nothing is treated as block CAD.
-// Cached briefly, since evaluating a big block CAD studio can take a second.
-const derivedCache = new Map();
-function derivedPartIds(req, source) {
-  const key = sourceKey(req, asSource(source));
-  const cached = derivedCache.get(key);
-  if (cached && Date.now() - cached.at < PART_INDEX_MAX_AGE_MS) return cached.ids;
-  if (derivedCache.size > 200) derivedCache.clear();
-  const ids = fetchDerivedPartIds(req, source).catch((err) => {
+// Kept until the document changes.
+async function derivedPartIds(req, source, opts) {
+  try {
+    return await cachedForSource(req, 'derived', source, (src) => fetchDerivedPartIds(req, src), opts);
+  } catch (err) {
+    if (err.status === 402) throw err;
     console.error('Derived feature lookup failed:', err.message);
-    derivedCache.delete(key);
     return new Set();
-  });
-  derivedCache.set(key, { at: Date.now(), ids });
-  return ids;
+  }
 }
 
 // A derived body that has been given a team part number (e.g. a shaft
@@ -310,9 +466,6 @@ function derivedPartIds(req, source) {
 function withBlockCad(group, derived) {
   return derived && group !== 'team' && group !== 'hardware' ? 'block' : group;
 }
-
-const PART_INDEX_MAX_AGE_MS = 30 * 1000;
-const partIndexes = new Map();
 
 // A "source" is the Part Studio a part lives in. In a Part Studio that's
 // just the open tab. In an assembly each part points back at its own Part
@@ -333,49 +486,47 @@ function sourceKey(req, src) {
   return `${req.sessionID}:${src.dwe}|${src.configuration || ''}`;
 }
 
-async function fetchPartIndex(req, source) {
-  const src = asSource(source);
-  const [parts, details] = await Promise.all([
-    onshapeFetch(req, `/parts/${src.dwe}${sourceQuery(src)}`),
-    onshapeFetch(req, `/partstudios/${src.dwe}/bodydetails${sourceQuery(src)}`),
-  ]);
+// The Part Studio's parts (names, materials): one call, kept until the
+// document changes. Shared by the parts list, assemblies and NAME.
+function getPartsList(req, source, opts) {
+  return cachedForSource(req, 'parts', source,
+    (src) => onshapeFetch(req, `/parts/${src.dwe}${sourceQuery(src)}`), opts);
+}
 
-  const partsById = new Map(parts.map((p) => [p.partId, p]));
-  const bodiesById = new Map();
-  const entityToPart = new Map();
-  for (const body of details.bodies || []) {
-    bodiesById.set(body.id, body);
-    for (const kind of ['faces', 'edges', 'vertices']) {
-      for (const entity of body[kind] || []) entityToPart.set(entity.id, body.id);
+// Every face, edge and vertex of every part (big): only fetched when
+// something needs the shapes (3D clicks, DXFs, twins, drawings).
+function getBodyDetails(req, source, opts) {
+  return cachedForSource(req, 'bodies', source, async (src) => {
+    const details = await onshapeFetch(req, `/partstudios/${src.dwe}/bodydetails${sourceQuery(src)}`);
+    const bodiesById = new Map();
+    const entityToPart = new Map();
+    for (const body of details.bodies || []) {
+      bodiesById.set(body.id, body);
+      for (const kind of ['faces', 'edges', 'vertices']) {
+        for (const entity of body[kind] || []) entityToPart.set(entity.id, body.id);
+      }
     }
-  }
-  // The face/edge geometry is kept too, for making DXFs.
-  return { partsById, bodiesById, entityToPart, fetchedAt: Date.now() };
+    return { bodiesById, entityToPart };
+  }, opts);
 }
 
-// Concurrent callers share one in-flight download.
-function getPartIndex(req, source, { refresh = false } = {}) {
-  const key = sourceKey(req, asSource(source));
-  const cached = partIndexes.get(key);
-  if (cached && !refresh) return cached;
-
-  if (partIndexes.size > 100) partIndexes.clear();
-  const loading = fetchPartIndex(req, source);
-  partIndexes.set(key, loading);
-  loading.catch(() => partIndexes.delete(key));
-  return loading;
+// Parts plus their shapes. The face/edge geometry is used for DXFs.
+async function getPartIndex(req, source, opts) {
+  const [parts, bodies] = await Promise.all([getPartsList(req, source, opts), getBodyDetails(req, source, opts)]);
+  return { partsById: new Map(parts.map((p) => [p.partId, p])), ...bodies };
 }
 
-const backgroundRefreshes = new Set();
+// Just the parts, by ID (no shapes).
+async function getPartsById(req, source, opts) {
+  return new Map((await getPartsList(req, source, opts)).map((p) => [p.partId, p]));
+}
 
-function refreshPartIndexInBackground(req, dwe) {
-  const key = sourceKey(req, asSource(dwe));
-  if (backgroundRefreshes.has(key)) return;
-  backgroundRefreshes.add(key);
-  fetchPartIndex(req, dwe)
-    .then((index) => partIndexes.set(key, Promise.resolve(index)))
-    .catch((err) => console.error('Background part index refresh failed:', err))
-    .finally(() => backgroundRefreshes.delete(key));
+// When a part isn't where it was expected, the document may have changed:
+// check its version now (one call) and only re-read when it really changed.
+async function getPartIndexWith(req, source, partId) {
+  const index = await getPartIndex(req, source);
+  if (index.bodiesById.has(partId) || isFrozenSource(asSource(source))) return index;
+  return getPartIndex(req, source, { maxAgeMs: FRESH_MS });
 }
 
 function partIdFor(index, selectionId) {
@@ -413,15 +564,37 @@ function currentDwe(req) {
   return `d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}`;
 }
 
-// Is the panel open in a Part Studio or an assembly? Asked once per session.
+// Is the panel open in a Part Studio or an assembly? Read from the
+// document's tab list (which the Drawing picker needs anyway), once per
+// session.
 async function elementType(req) {
   const ctx = req.session.onshapeContext;
   if (!ctx.elementType) {
-    const elements = await onshapeFetch(req,
-      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements?elementId=${ctx.elementId}`);
-    ctx.elementType = (elements[0] && elements[0].elementType) || 'PARTSTUDIO';
+    let here = (await getElements(req)).find((e) => e.id === ctx.elementId);
+    if (!here) {
+      // A brand-new tab the cached list doesn't have yet: ask about this one.
+      [here] = await onshapeFetch(req,
+        `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements?elementId=${ctx.elementId}`);
+    }
+    ctx.elementType = (here && here.elementType) || 'PARTSTUDIO';
   }
   return ctx.elementType;
+}
+
+// The document's tabs (for the Drawing picker and MAKE DRAWING), kept until
+// the document changes.
+const elementLists = new Map();
+async function getElements(req, { maxAgeMs } = {}) {
+  const ctx = req.session.onshapeContext;
+  const stamp = await docVersion(req, { maxAgeMs });
+  const key = docKeyOf(ctx);
+  const hit = elementLists.get(key);
+  if (hit && hit.stamp === stamp) return hit.value;
+  if (elementLists.size > 300) elementLists.clear();
+  const value = onshapeFetch(req, `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements`);
+  elementLists.set(key, { stamp, value });
+  value.catch(() => { if (elementLists.get(key) && elementLists.get(key).value === value) elementLists.delete(key); });
+  return value;
 }
 
 // ---- Assemblies ---------------------------------------------------------
@@ -483,7 +656,7 @@ function linkedPartKey(ctx, source, partId) {
   return [ctx.documentId, m[1], m[2], partId, encodeURIComponent(configuration)].join('|');
 }
 
-async function fetchAssemblyParts(req) {
+async function fetchAssemblyParts(req, { reuseDerived = false } = {}) {
   const ctx = req.session.onshapeContext;
   const def = await onshapeFetch(req,
     `/assemblies/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${ctx.elementId}?includeMateFeatures=false`);
@@ -540,17 +713,17 @@ async function fetchAssemblyParts(req) {
   const worker = async () => {
     for (let job = jobs.shift(); job; job = jobs.shift()) {
       try {
-        const [list, derived] = await Promise.all([
-          onshapeFetch(req, `/parts/${job.source.dwe}${sourceQuery(job.source)}`),
-          derivedPartIds(req, job.source),
+        const [byId, derived] = await Promise.all([
+          getPartsById(req, job.source),
+          derivedPartIds(req, job.source, { reuse: reuseDerived }),
         ]);
-        const byId = new Map(list.map((x) => [x.partId, x]));
         for (const p of job.parts) {
           const info = byId.get(p.partId);
           p.material = info && info.material ? info.material.displayName : null;
           p.group = withBlockCad(p.group, derived.has(p.partId));
         }
       } catch (err) {
+        if (err.status === 402) throw err;
         console.error('Onshape material lookup failed:', err.message);
       }
     }
@@ -559,26 +732,31 @@ async function fetchAssemblyParts(req) {
 
   parts.sort((a, b) => GROUP_ORDER[a.group] - GROUP_ORDER[b.group]
     || a.name.localeCompare(b.name, undefined, { numeric: true }));
-  return { parts, byId: new Map(parts.map((p) => [p.id, p])), fetchedAt: Date.now() };
+  return { parts, byId: new Map(parts.map((p) => [p.id, p])) };
 }
 
-function getAssemblyParts(req, { refresh = false } = {}) {
-  const key = `${req.sessionID}:${currentDwe(req)}`;
-  const cached = assemblyLists.get(key);
-  if (cached && !refresh) return cached;
+// Kept until the document changes (any edit, in any tab, makes a new
+// version). { reuse: true } skips the version check.
+async function getAssemblyParts(req, { maxAgeMs, reuse = false, reuseDerived = false } = {}) {
+  const key = currentDwe(req);
+  const hit = assemblyLists.get(key);
+  if (hit && reuse && canReuse(req)) return hit.value;
+  const stamp = await docVersion(req, { maxAgeMs });
+  const again = assemblyLists.get(key);
+  if (again && again.stamp === stamp) return again.value;
   if (assemblyLists.size > 100) assemblyLists.clear();
-  const loading = fetchAssemblyParts(req);
-  assemblyLists.set(key, loading);
-  loading.catch(() => assemblyLists.delete(key));
-  return loading;
+  const value = fetchAssemblyParts(req, { reuseDerived });
+  assemblyLists.set(key, { stamp, value });
+  value.catch(() => { if (assemblyLists.get(key) && assemblyLists.get(key).value === value) assemblyLists.delete(key); });
+  return value;
 }
 
 // Turns the panel's part ID into the Part Studio and part it came from.
 async function resolvePart(req, partId) {
   const dwe = currentDwe(req);
   if (await elementType(req) !== 'ASSEMBLY') return { source: asSource(dwe), partId };
-  let list = await getAssemblyParts(req);
-  if (!list.byId.has(partId)) list = await getAssemblyParts(req, { refresh: true });
+  let list = await getAssemblyParts(req, { reuse: true });
+  if (!list.byId.has(partId)) list = await getAssemblyParts(req, { maxAgeMs: FRESH_MS });
   const part = list.byId.get(partId);
   if (!part) throw new Error('Couldn\'t find the part in the assembly any more. Refresh the parts list.');
   return { source: part.source, partId: part.partId };
@@ -587,10 +765,16 @@ async function resolvePart(req, partId) {
 // The part's overall size, to tell shafts from plates (for the Machine guess)
 // and a plate's thickness (for the Thickness guess).
 const METERS_PER_INCH = 0.0254;
-// Part sizes and pictures barely change, and Onshape caps how many API
-// calls the app gets a year, so they're kept for 12 hours.
+// Pictures barely matter if a little out of date, and Onshape caps how many
+// API calls the app gets a year, so they're kept for 12 hours.
 const PART_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
-const partShapes = new Map();
+
+// A part's bounding box, kept until the document changes. Shared by the
+// card's size check and MAKE DRAWING.
+function partBox(req, source, partId) {
+  return cachedForSource(req, 'box', source, (src) => onshapeFetch(req,
+    `/parts/${src.dwe}/partid/${encodeURIComponent(partId)}/boundingboxes${sourceQuery(src)}`), { extra: partId });
+}
 
 app.get('/api/onshape/part-shape', async (req, res) => {
   const dwe = currentDwe(req);
@@ -600,12 +784,7 @@ app.get('/api/onshape/part-shape', async (req, res) => {
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
-    // Saved for a while, shared by everyone, since Onshape limits API calls.
-    const key = `${source.dwe}|${source.configuration || ''}|${sourcePartId}`;
-    const cached = partShapes.get(key);
-    if (cached && Date.now() - cached.at < PART_CACHE_MAX_AGE_MS) return res.json(cached.body);
-    const box = await onshapeFetch(req,
-      `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/boundingboxes${sourceQuery(source)}`);
+    const box = await partBox(req, source, sourcePartId);
     const dims = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
       .map((m) => m / METERS_PER_INCH)
       .sort((a, b) => a - b);
@@ -613,10 +792,7 @@ app.get('/api/onshape/part-shape', async (req, res) => {
     let shape = 'block';
     if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
     else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
-    const body = { shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null };
-    if (partShapes.size > 2000) partShapes.clear();
-    partShapes.set(key, { body, at: Date.now() });
-    res.json(body);
+    res.json({ shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null });
   } catch (err) {
     console.error('Part shape lookup failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
@@ -665,15 +841,11 @@ app.get('/api/onshape/part-image', async (req, res) => {
 // by point: a copy (or a mirror of a symmetric part) shares the number, a
 // true left/right mirror pair gets two numbers, and a part too symmetric to
 // line up is left for the user to decide (SAME PART).
-const massCache = new Map();
 function firstNumber(v) { return Array.isArray(v) ? Number(v[0]) : Number(v); }
 
+// Kept until the document changes.
 function partMassProps(req, source) {
-  const key = sourceKey(req, asSource(source));
-  const cached = massCache.get(key);
-  if (cached && Date.now() - cached.at < 60 * 1000) return cached.props;
-  if (massCache.size > 200) massCache.clear();
-  const props = onshapeFetch(req, `/partstudios/${source.dwe}/massproperties${sourceQuery(source, new URLSearchParams({ massAsGroup: 'false' }))}`)
+  return cachedForSource(req, 'mass', source, (src) => onshapeFetch(req, `/partstudios/${src.dwe}/massproperties${sourceQuery(src, new URLSearchParams({ massAsGroup: 'false' }))}`)
     .then((body) => {
       const out = new Map();
       for (const [partId, b] of Object.entries(body.bodies || {})) {
@@ -689,13 +861,7 @@ function partMassProps(req, source) {
         });
       }
       return out;
-    })
-    .catch((err) => {
-      massCache.delete(key);
-      throw err;
-    });
-  massCache.set(key, { at: Date.now(), props });
-  return props;
+    }));
 }
 
 // A first, cheap filter: copies agree to about 0.00001% in tests; 0.01%
@@ -754,8 +920,8 @@ app.post('/api/onshape/twins', express.json(), async (req, res) => {
 
     const bodyOf = async (r) => {
       try {
-        const index = await getPartIndex(req, r.source);
-        return index.bodiesById.get(r.partId) || null;
+        const { bodiesById } = await getBodyDetails(req, r.source);
+        return bodiesById.get(r.partId) || null;
       } catch (err) {
         return null;
       }
@@ -792,24 +958,6 @@ app.post('/api/onshape/twins', express.json(), async (req, res) => {
   }
 });
 
-// Called when the panel opens so the first click is already fast.
-app.post('/api/onshape/warm', async (req, res) => {
-  const dwe = currentDwe(req);
-  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
-
-  try {
-    if (await elementType(req) === 'ASSEMBLY') {
-      const list = await getAssemblyParts(req);
-      return res.json({ parts: list.parts.length, kind: 'assembly' });
-    }
-    const index = await getPartIndex(req, dwe);
-    res.json({ parts: index.partsById.size });
-  } catch (err) {
-    console.error('Onshape part index load failed:', err);
-    res.status(502).json({ error: onshapeErrorMessage(err) });
-  }
-});
-
 // Every part in the Part Studio, for the panel's checklist.
 // Names a part the same way across edits and versions (the list's own id
 // changes whenever the document does), so the panel can remember choices
@@ -825,18 +973,14 @@ app.get('/api/onshape/parts', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
 
-  const refresh = req.query.refresh === '1';
-  // ?fresh=1 (sent just before the part cards) re-reads names and materials
-  // right now; in a Part Studio only the quick /parts list, not the face data.
-  const fresh = req.query.fresh === '1';
-  // The list is cached per session, so a material or name set in Onshape
-  // after the panel first loaded would never show up. Reload anything older
-  // than PART_INDEX_MAX_AGE_MS.
-  const stale = (cached) => Date.now() - cached.fetchedAt > PART_INDEX_MAX_AGE_MS;
+  // ?refresh=1 (the reload button) and ?fresh=1 (just before the part cards)
+  // check the document's version right now; otherwise a check from the last
+  // few seconds is trusted. Either way nothing is re-read unless the
+  // document has changed.
+  const maxAgeMs = req.query.refresh === '1' || req.query.fresh === '1' ? FRESH_MS : undefined;
   try {
     if (await elementType(req) === 'ASSEMBLY') {
-      let list = await getAssemblyParts(req, { refresh: refresh || fresh });
-      if (stale(list)) list = await getAssemblyParts(req, { refresh: true });
+      const list = await getAssemblyParts(req, { maxAgeMs, reuseDerived: req.query.fresh === '1' });
       return res.json({
         kind: 'assembly',
         parts: list.parts.map((p) => ({
@@ -849,14 +993,11 @@ app.get('/api/onshape/parts', async (req, res) => {
         })),
       });
     }
-    let index = await getPartIndex(req, dwe, { refresh });
-    if (stale(index)) {
-      index = await getPartIndex(req, dwe, { refresh: true });
-    } else if (fresh) {
-      for (const p of await onshapeFetch(req, `/parts/${dwe}`)) index.partsById.set(p.partId, p);
-    }
-    const derived = await derivedPartIds(req, dwe);
-    const parts = [...index.partsById.values()]
+    const list = await getPartsList(req, dwe, { maxAgeMs });
+    // The check before the cards only needs names and materials, so it keeps
+    // the block CAD answer it already has.
+    const derived = await derivedPartIds(req, dwe, { reuse: req.query.fresh === '1' });
+    const parts = list
       .map((p) => ({
         partId: p.partId,
         name: p.name,
@@ -890,19 +1031,17 @@ app.get('/api/onshape/selected-part', async (req, res) => {
     if (await elementType(req) === 'ASSEMBLY') {
       return res.status(409).json({ error: 'Pick parts from the list in assemblies.' });
     }
-    let index = await getPartIndex(req, dwe);
+    // Clicks are answered from what's already known (no Onshape call).
+    let index = await getPartIndex(req, dwe, { reuse: true });
     let partId = partIdFor(index, selectionId);
     let via = 'cache';
 
     if (!partId) {
       // Unknown ID: the model has probably changed since we last looked.
-      index = await getPartIndex(req, dwe, { refresh: true });
+      // Check the version (one call) and re-read only if it really changed.
+      index = await getPartIndex(req, dwe, { maxAgeMs: FRESH_MS });
       partId = partIdFor(index, selectionId);
       via = 'refresh';
-    } else if (Date.now() - index.fetchedAt > PART_INDEX_MAX_AGE_MS) {
-      // Answer from cache now, but pick up renames/material changes for next
-      // time. The old index keeps serving clicks until the new one is ready.
-      refreshPartIndexInBackground(req, dwe);
     }
 
     if (!partId) {
@@ -942,6 +1081,9 @@ app.get('/api/onshape/selected-part', async (req, res) => {
 // number in a series like 26O-E001. Renaming changes the document, so it
 // needs the app's "edit" (OAuth2Write) permission.
 const NAME_PREFIX = /^[A-Za-z0-9][A-Za-z0-9-]{0,15}$/;
+// Onshape's "Name" property has the same ID on every part, so it's looked up
+// once (one extra call) and then each rename is a single call.
+let namePropertyId = null;
 const PART_NAME = /^[\w .\-()#/]{1,80}$/;
 
 function escapeRegExp(text) {
@@ -964,9 +1106,10 @@ app.get('/api/onshape/next-number', async (req, res) => {
   const numbers = [];
   let lunaHighest = 0;
   try {
+    // Renames made from the panel are already in the cached lists.
     const names = await elementType(req) === 'ASSEMBLY'
-      ? (await getAssemblyParts(req, { refresh: true })).parts.filter((p) => !exclude.has(p.id)).map((p) => p.name)
-      : [...(await getPartIndex(req, dwe, { refresh: true })).partsById.values()].filter((p) => !exclude.has(p.partId)).map((p) => p.name);
+      ? (await getAssemblyParts(req)).parts.filter((p) => !exclude.has(p.id)).map((p) => p.name)
+      : (await getPartsList(req, dwe)).filter((p) => !exclude.has(p.partId)).map((p) => p.name);
     for (const name of names) {
       const m = String(name || '').match(pattern);
       if (m) numbers.push(Number(m[1]));
@@ -1007,7 +1150,7 @@ app.post('/api/onshape/rename', express.json(), async (req, res) => {
     let target = { dwe, partId, configuration: '' };
     let assemblyPart = null;
     if (await elementType(req) === 'ASSEMBLY') {
-      const list = await getAssemblyParts(req);
+      const list = await getAssemblyParts(req, { reuse: true });
       assemblyPart = list.byId.get(partId);
       if (!assemblyPart) return res.status(404).json({ error: 'Couldn\'t find that part in the assembly any more. Refresh the list.' });
       if (!isLocalSource(ctx, assemblyPart.source)) {
@@ -1017,29 +1160,37 @@ app.post('/api/onshape/rename', express.json(), async (req, res) => {
     }
     const query = target.configuration ? `?configuration=${encodeURIComponent(target.configuration)}` : '';
     const path = `/metadata/${target.dwe}/p/${encodeURIComponent(target.partId)}${query}`;
-    // Look up the Name property's ID rather than hard-coding it.
-    const meta = await onshapeFetch(req, path);
-    const nameProp = (meta.properties || []).find((p) => p.name === 'Name');
-    if (!nameProp) return res.status(502).json({ error: 'Onshape didn\'t list a Name property for this part.' });
-    await onshapeFetch(req, path, {
-      method: 'POST',
-      body: JSON.stringify({
-        jsonType: 'metadata-part',
-        partId: target.partId,
-        properties: [{ propertyId: nameProp.propertyId, value: name }],
-      }),
-    });
+    // Look up the Name property's ID rather than hard-coding it (once).
+    if (!namePropertyId) {
+      const meta = await onshapeFetch(req, path);
+      const nameProp = (meta.properties || []).find((p) => p.name === 'Name');
+      if (!nameProp) return res.status(502).json({ error: 'Onshape didn\'t list a Name property for this part.' });
+      namePropertyId = nameProp.propertyId;
+    }
+    try {
+      await onshapeFetch(req, path, {
+        method: 'POST',
+        body: JSON.stringify({
+          jsonType: 'metadata-part',
+          partId: target.partId,
+          properties: [{ propertyId: namePropertyId, value: name }],
+        }),
+      });
+    } catch (err) {
+      // Look the ID up again next time, in case it was wrong.
+      if (err.status === 400 || err.status === 404) namePropertyId = null;
+      throw err;
+    }
 
     // Keep the cached part list in step so the checklist shows the new name.
     if (assemblyPart) {
       assemblyPart.name = name;
       assemblyPart.group = partGroup(name, false);
     } else {
-      const index = await getPartIndex(req, dwe);
-      const cached = index.partsById.get(partId);
+      const cached = (await getPartsById(req, dwe, { reuse: true })).get(partId);
       if (cached) cached.name = name;
     }
-    res.json({ partId, name, oldName: nameProp.value });
+    res.json({ partId, name });
   } catch (err) {
     console.error('Onshape rename failed:', err);
     if (err.status === 403) {
@@ -1062,8 +1213,7 @@ app.get('/api/onshape/drawings', async (req, res) => {
   try {
     // Onshape drawings are "application" elements, not their own element
     // type, so list everything and keep the ones whose data type is a drawing.
-    const elements = await onshapeFetch(req,
-      `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements`);
+    const elements = await getElements(req, { maxAgeMs: req.query.refresh === '1' ? FRESH_MS : undefined });
     res.json({
       drawings: elements
         .filter((e) => e.elementType === 'DRAWING'
@@ -1106,7 +1256,9 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     if (source.configuration) reference.configuration = source.configuration;
 
     // Don't make a second drawing when one already exists for this part.
-    const elements = await onshapeFetch(req, `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements`);
+    // Checked fresh (one call, or none if nothing changed) so a drawing made
+    // a moment ago isn't made twice.
+    const elements = await getElements(req, { maxAgeMs: 5000 });
     const drawings = elements.filter((e) => e.elementType === 'DRAWING'
       || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
     const key = partNumber.split(/\s+/)[0].toUpperCase();
@@ -1117,12 +1269,10 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     while (names.has(`${partNumber} Drawing ${n}`)) n += 1;
     const name = `${partNumber} Drawing ${n}`;
 
-    let index = await getPartIndex(req, source);
-    if (!index.bodiesById.has(sourcePartId)) index = await getPartIndex(req, source, { refresh: true });
+    const index = await getPartIndexWith(req, source, sourcePartId);
     const body = index.bodiesById.get(sourcePartId);
     if (!body) return res.status(404).json({ error: 'Couldn\'t read the part\'s shape from Onshape.' });
-    const box = await onshapeFetch(req,
-      `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/boundingboxes${sourceQuery(source)}`);
+    const box = await partBox(req, source, sourcePartId);
 
     const result = await makeDrawing({
       api: (path, options) => onshapeFetch(req, path, options),
@@ -1138,6 +1288,8 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
         `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
         { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' }, ctx.documentId, 'drawing data'))),
     });
+    // The document now has a new tab; the next Drawing list reads it again.
+    elementLists.delete(docKeyOf(ctx));
     res.json(result);
   } catch (err) {
     console.error('Make drawing failed:', err);
@@ -1408,7 +1560,7 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
   const panelPartId = String(b.onshapePartId || '');
   if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
     try {
-      const list = await getAssemblyParts(req);
+      const list = await getAssemblyParts(req, { reuse: true });
       const part = list.byId.get(panelPartId);
       const ctx = req.session.onshapeContext;
       const key = part && !isLocalSource(ctx, part.source) && linkedPartKey(ctx, part.source, part.partId);
@@ -1480,9 +1632,9 @@ function safeFileName(text) {
 }
 
 async function buildDxf(req, source, partId, faceId) {
-  let index = await getPartIndex(req, source);
-  if (!index.bodiesById.has(partId)) index = await getPartIndex(req, source, { refresh: true });
-  const body = index.bodiesById.get(partId);
+  let details = await getBodyDetails(req, source);
+  if (!details.bodiesById.has(partId) && !isFrozenSource(asSource(source))) details = await getBodyDetails(req, source, { maxAgeMs: FRESH_MS });
+  const body = details.bodiesById.get(partId);
   if (!body) throw new Error('Couldn\'t find the part in Onshape to make its DXF.');
 
   // Splines and other curves need their tessellated points from Onshape.
@@ -1505,9 +1657,13 @@ async function runTranslation(req, path, params, documentId, what, linkDocumentI
   const started = await onshapeFetch(req, path, { method: 'POST', body: JSON.stringify(params) });
   const deadline = Date.now() + TRANSLATION_TIMEOUT_MS;
   let info = started;
+  // Each status check is an Onshape call, so wait longer between them as
+  // the export goes on (2 s, 3 s, 4 s, then every 5 s) instead of every second.
+  let wait = 2000;
   while (info.requestState === 'ACTIVE') {
-    if (Date.now() > deadline) throw new Error(`Onshape took too long to export the ${what}.`);
-    await new Promise((r) => setTimeout(r, 1000));
+    if (Date.now() + wait > deadline) throw new Error(`Onshape took too long to export the ${what}.`);
+    await new Promise((r) => setTimeout(r, wait));
+    wait = Math.min(wait + 1000, 5000);
     info = await onshapeFetch(req, `/translations/${started.id}`);
   }
   if (info.requestState !== 'DONE' || !(info.resultExternalDataIds || []).length) {
