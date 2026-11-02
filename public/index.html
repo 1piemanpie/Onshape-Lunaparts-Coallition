@@ -2131,6 +2131,20 @@
     try { data = JSON.parse(localStorage.getItem(stagedKey()) || 'null'); } catch (err) { data = null; }
     if (!data || !Array.isArray(data.parts) || Date.now() - data.savedAt > STAGED_MAX_AGE_MS) return;
     state.staged = data.parts;
+    // Match saved parts to the list again if their id changed (older panel
+    // versions made a new id after every document edit): by the part's
+    // stable key, or else by its name when only one part has it.
+    const ids = new Set(state.parts.map((p) => p.partId));
+    for (const s of state.staged) {
+      if (ids.has(s.partId)) continue;
+      const byKey = s.onshape.stableKey && state.parts.find((p) => p.stableKey === s.onshape.stableKey);
+      const named = state.parts.filter((p) => p.name === s.onshape.name);
+      const match = byKey || (named.length === 1 ? named[0] : null);
+      if (!match || stagedFor(match.partId)) continue;
+      s.partId = match.partId;
+      s.onshape.partId = match.partId;
+      if (s.drawing.state === 'failed') s.drawing = { state: 'making' };
+    }
     for (const s of state.staged) {
       // Numbers handed out to linked parts stay taken.
       if (s.number) givenNumbers.add(s.number);
@@ -2214,7 +2228,7 @@
 
     const entry = {
       partId: onshapePart.partId,
-      onshape: { partId: onshapePart.partId, name: onshapePart.name, linked: Boolean(onshapePart.linked), onshapeKey: onshapePart.onshapeKey || '' },
+      onshape: { partId: onshapePart.partId, name: onshapePart.name, linked: Boolean(onshapePart.linked), onshapeKey: onshapePart.onshapeKey || '', stableKey: onshapePart.stableKey || '' },
       number,
       part,
       values,
