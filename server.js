@@ -894,7 +894,7 @@ app.get('/api/luna/options', async (req, res) => {
       ? 'LUNA Parts rejected the API key.'
       : err.status === 403
         ? 'The API key\'s user isn\'t allowed to read this.'
-        : 'Could not reach LUNA Parts.';
+        : `Could not reach LUNA Parts (${err.status ? `it answered ${err.status}` : (err.cause && err.cause.code) || err.message || 'network error'}).`;
     res.status(502).json({ error: message });
   }
 });
