@@ -211,6 +211,9 @@
   .mini:hover { border-color: #a1a1aa; }
   .mini.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .mini[hidden] { display: none; }
+  .drawing-row { display: flex; gap: 6px; align-items: center; }
+  .drawing-row select { flex: 1; min-width: 0; }
+  .drawing-row .mini { white-space: nowrap; padding: 6px 8px; }
   .part-list { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .part-row {
     display: flex; align-items: center; gap: 9px;
@@ -497,8 +500,13 @@
         <!-- Picked automatically from the part name (e.g. part E05 ->
              "E05 Drawing 1"); exported to PDF and attached on Upload, along
              with a DXF of the part's flat face. -->
-        <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
+        <div class="drawing-row">
+          <select id="drawingSelect" disabled><option value="">Loading&hellip;</option></select>
+          <!-- Makes an Onshape drawing in the team's layout (see drawings.js). -->
+          <button id="makeDrawingBtn" class="mini" type="button" hidden>MAKE DRAWING</button>
+        </div>
         <p id="attachHint" class="hint left"></p>
+        <label class="check-row"><input id="autoDrawInput" type="checkbox" checked /> Make a drawing on Upload if there isn't one</label>
         <label class="check-row"><input id="stepInput" type="checkbox" /> Also attach a STEP file</label>
       </div>
 
@@ -1943,6 +1951,7 @@
     drawingSelect.value = '';
     // reset() unticks STEP; put back what this browser remembers.
     try { el('stepInput').checked = localStorage.getItem('lunaStep') === '1'; } catch (err) { /* storage blocked */ }
+    try { el('autoDrawInput').checked = localStorage.getItem('lunaAutoDraw') !== '0'; } catch (err) { /* storage blocked */ }
     showHint('');
   }
 
@@ -2016,6 +2025,7 @@
       onshapePart,
       faceId: face.faceId || null,
       drawingId: drawingSelect.value,
+      autoDraw: el('autoDrawInput').checked && canDraw(onshapePart),
       wantDxf: wantsDxf(onshapePart),
       wantStep: el('stepInput').checked,
       result,
@@ -2073,6 +2083,17 @@
         }
       }
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
+
+      if (!job.drawingId && job.autoDraw) {
+        result.detail = 'Making a drawing in Onshape…';
+        renderUploadProgress();
+        const made = await makeDrawingFor(job.onshapePart, {
+          partNumber: created.partNumber || part.partNumber || job.onshapePart.name,
+          quantity: part.quantity,
+          material: part.material,
+        });
+        if (made) job.drawingId = made.drawingId;
+      }
 
       if (!job.wantDxf && !job.drawingId && !job.wantStep) {
         result.outcome = 'created';
@@ -2163,6 +2184,14 @@
         ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
         : 'DXF of the largest flat face';
     const noDxf = toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
+    el('makeDrawingBtn').hidden = Boolean(drawingSelect.value) || !canDraw(part);
+    if (!drawingSelect.value && canDraw(part) && el('autoDrawInput').checked) {
+      attachHint.className = 'hint left';
+      attachHint.textContent = dxf
+        ? `Will make a drawing in Onshape, then attach: ${dxf} + drawing PDF.`
+        : `Will make a drawing in Onshape, then attach its PDF. ${noDxf}.`;
+      return;
+    }
     if (drawingSelect.value) {
       attachHint.className = 'hint left';
       attachHint.textContent = dxf ? `Will attach: ${dxf} + drawing PDF.` : `Will attach: drawing PDF. ${noDxf}.`;
@@ -2220,6 +2249,59 @@
     if (c.pending) summary += `, ${c.pending} still uploading`;
     if (c.failed) summary += `. ${c.failed} failed and ${c.failed === 1 ? 'is' : 'are'} ticked again on the parts list`;
     showHint(`${summary}.`, c.failed ? 'bad' : (c.sent ? 'good' : ''));
+  }
+
+  // ---- Making drawings ------------------------------------------------------
+  // Hardware, block CAD and linked catalog parts don't get drawings.
+  function canDraw(part) {
+    return Boolean(part) && !['hardware', 'block'].includes(part.group);
+  }
+
+  // Asks the server to make the drawing; returns { drawingId, name } or null.
+  // Problems are logged, never thrown, so an upload carries on without it.
+  async function makeDrawingFor(part, { partNumber, quantity, material }) {
+    try {
+      const body = await getJson('/api/onshape/make-drawing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partId: part.partId, partNumber, quantity, material }),
+      });
+      if (body.existing) log(`${partNumber} already has a drawing (${body.name}), so that one is used.`);
+      else log(`Made ${body.name} in Onshape (${body.plan.type}, scale ${body.plan.scale.join(':')}).`, 'success');
+      for (const w of body.warnings || []) log(`${body.name}: ${w}`, 'error');
+      if (!state.drawings) state.drawings = [];
+      if (!state.drawings.some((d) => d.id === body.drawingId)) {
+        state.drawings.push({ id: body.drawingId, name: body.name });
+        const option = document.createElement('option');
+        option.value = body.drawingId;
+        option.textContent = body.name;
+        drawingSelect.appendChild(option);
+      }
+      return body;
+    } catch (err) {
+      log(`Couldn't make a drawing for ${partNumber}: ${err.message}`, 'error');
+      return null;
+    }
+  }
+
+  async function makeDrawingNow() {
+    const part = currentPart();
+    if (!part) return;
+    const button = el('makeDrawingBtn');
+    button.disabled = true;
+    button.textContent = 'MAKING…';
+    const made = await makeDrawingFor(part, {
+      partNumber: el('partNumberInput').value.trim() || part.name,
+      quantity: Number(el('quantityInput').value) || 1,
+      material: el('materialInput').value.trim(),
+    });
+    button.disabled = false;
+    button.textContent = 'MAKE DRAWING';
+    if (made && currentPart() === part) {
+      drawingSelect.value = made.drawingId;
+      showToast(made.existing ? `Using ${made.name}` : `\u2713 Made ${made.name}`);
+    }
+    updateAttachHint();
   }
 
   // ---- Drawing picker ------------------------------------------------------
@@ -2305,6 +2387,13 @@
     renderPartList();
   });
   drawingSelect.addEventListener('change', updateAttachHint);
+  el('makeDrawingBtn').addEventListener('click', makeDrawingNow);
+  // "Make a drawing on Upload" is remembered in this browser (on by default).
+  try { el('autoDrawInput').checked = localStorage.getItem('lunaAutoDraw') !== '0'; } catch (err) { /* storage blocked */ }
+  el('autoDrawInput').addEventListener('change', () => {
+    try { localStorage.setItem('lunaAutoDraw', el('autoDrawInput').checked ? '1' : '0'); } catch (err) { /* storage blocked */ }
+    updateAttachHint();
+  });
   toolSelect.addEventListener('change', () => { state.toolTouched = true; el('toolWhy').textContent = ''; updateAttachHint(); });
   thicknessSelect.addEventListener('change', () => { state.thicknessTouched = true; });
   cardProjectSelect.addEventListener('change', () => {
