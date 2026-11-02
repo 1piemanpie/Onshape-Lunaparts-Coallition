@@ -767,13 +767,15 @@ function edgeGap(p, b) {
 // ---- Onshape calls -------------------------------------------------------
 // api(path, options) is the server's onshapeFetch bound to the request.
 async function waitForModify(api, id, what) {
+  // Onshape API calls are capped per year, so check rarely: most edits are
+  // done within a few seconds, so the first look waits 2.5 s.
   const deadline = Date.now() + 90 * 1000;
   let st = { requestState: 'ACTIVE' };
-  let delay = 700;
+  let delay = 2500;
   while (st.requestState === 'ACTIVE') {
     if (Date.now() > deadline) throw new Error(`Onshape took too long to ${what}.`);
     await new Promise((r) => setTimeout(r, delay));
-    delay = Math.min(delay * 1.5, 3000);
+    delay = Math.min(delay * 1.6, 8000);
     st = await api(`/drawings/modify/status/${id}`);
   }
   if (st.requestState !== 'DONE') throw new Error(`Onshape couldn't ${what}${st.failureReason ? `: ${st.failureReason}` : '.'}`);
@@ -887,7 +889,14 @@ async function readLayout(api, ctx, eid, plan, createdIds, exportJson) {
 }
 
 // The whole job. Returns { drawingId, name, plan, warnings }.
-async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, qty, material, exportJson }) {
+// Each rescale costs about 10 Onshape calls (edit, status checks, reading the
+// views back), and calls are capped per year, so don't retry smaller scales;
+// a crowded drawing gets the "needs a check" note instead.
+const MAX_LAYOUT_TRIES = 1;
+
+async function makeDrawing({ api: rawApi, ctx, reference, body, box, name, partNumber, qty, material, exportJson }) {
+  let calls = 0;
+  const api = (...args) => { calls += 1; return rawApi(...args); };
   const info = analyzePart(body, box);
   let plan = planDrawing(info, { qty, material, partNumber });
   const warnings = [...info.warnings];
@@ -906,7 +915,7 @@ async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, q
   // up to two smaller scales before settling for "needs a check".
   let result = null;
   let best = null; // { plan, result } with the fewest problems so far
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_LAYOUT_TRIES; attempt += 1) {
     let layout;
     try {
       layout = await readLayout(api, ctx, eid, plan, createdIds, exportJson);
@@ -917,7 +926,7 @@ async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, q
     result = annotationsFor(plan, layout.views, layout.geometry);
     const count = (result.issues || []).length;
     if (!best || count < best.result.issues.length) best = { plan, result };
-    if (!count || attempt === 2) break;
+    if (!count || attempt === MAX_LAYOUT_TRIES - 1) break;
     const smaller = planDrawing(info, { qty, material, partNumber, smallerThan: plan.scale });
     if (smaller.s >= plan.s) break;
     try {
@@ -946,7 +955,7 @@ async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, q
       warnings.push(err.message);
     }
   }
-  return { drawingId: eid, name, plan: { type: plan.type, scale: plan.scale, orientation: plan.orientation }, needsCheck: Boolean(result.issues && result.issues.length), warnings };
+  return { drawingId: eid, name, plan: { type: plan.type, scale: plan.scale, orientation: plan.orientation }, needsCheck: Boolean(result.issues && result.issues.length), warnings, calls };
 }
 
 module.exports = {
