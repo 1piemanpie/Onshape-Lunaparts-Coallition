@@ -935,11 +935,18 @@
       const ids = selections.map((s) => s.selectionId).filter(Boolean);
       const added = selections.filter((s) => s.selectionId && !lastSelectionIds.has(s.selectionId));
       lastSelectionIds = new Set(ids);
-      if (added.length) findRowForSelection(added);
+      state.currentSelections = selections;
       if (namer.active) {
-        if (state.kind !== 'assembly') for (const s of added) namer.enqueue(s.selectionId);
+        // Each part clicked in the 3D view gets the next number, in click
+        // order. In an assembly the click is matched to its row first.
+        for (const s of added) {
+          if (state.kind !== 'assembly') { namer.enqueue(s.selectionId); continue; }
+          const part = partForSelection(s);
+          if (part) namer.enqueueRow(part.partId);
+        }
         return;
       }
+      if (added.length) findRowForSelection(added);
       const picked = selections.find((s) => s.selectionId);
       if (picked) {
         lookUpSelection(picked);
@@ -1106,12 +1113,17 @@
 
   // Clicking a part in the assembly's 3D view finds its row: opens its fold,
   // scrolls to it and lights it up, and shows its picture.
+  // The assembly part a 3D-view click (OCCURRENCE selection) belongs to.
+  function partForSelection(sel) {
+    const path = (sel.occurrencePath || []).join('/');
+    return state.parts.find((p) => (p.occurrences || []).some((occ) => (path && occ.join('/') === path)
+      || occ[occ.length - 1] === sel.selectionId)) || null;
+  }
+
   function findRowForSelection(selections) {
     if (state.kind !== 'assembly' || state.screen !== 'list') return;
     for (const sel of [...selections].reverse()) {
-      const path = (sel.occurrencePath || []).join('/');
-      const part = state.parts.find((p) => (p.occurrences || []).some((occ) => (path && occ.join('/') === path)
-        || occ[occ.length - 1] === sel.selectionId));
+      const part = partForSelection(sel);
       if (!part) continue;
       const row = document.querySelector(`.part-row[data-part-id="${CSS.escape(part.partId)}"]`);
       if (!row) return;
@@ -1152,6 +1164,47 @@
     render() {
       el('namerNext').textContent = this.next ? this.format(this.next) : '…';
       el('namerUndo').disabled = !this.named.length;
+      const n = this.pending.length;
+      el('namerDone').textContent = n ? `NAME ${n} & DONE` : 'DONE';
+      if (n && this.next) {
+        const last = this.format(this.next + n - 1);
+        this.message(`${n} part${n === 1 ? ' is' : 's are'} already selected. Press NAME ${n} & DONE to number ${n === 1 ? 'it' : 'them'} ${this.format(this.next)}${n > 1 ? ` to ${last}, in the order you selected them` : ''}. Or click more parts first.${this.skippedLinked ? ` (${this.skippedLinked} linked FRC Design App part${this.skippedLinked === 1 ? '' : 's'} left out: those get their number on the upload card.)` : ''}`);
+      }
+    },
+    pending: [],  // parts already selected when NAME was opened
+    skippedLinked: 0,
+    // What was selected in Onshape before NAME opened, as parts to name on DONE.
+    pendingFromSelection() {
+      const sels = state.currentSelections || [];
+      this.skippedLinked = 0;
+      if (state.kind !== 'assembly') return sels.map((s) => ({ selectionId: s.selectionId })).filter((x) => x.selectionId);
+      const seen = new Set();
+      const out = [];
+      for (const sel of sels) {
+        const part = partForSelection(sel);
+        if (!part || seen.has(part.partId)) continue;
+        seen.add(part.partId);
+        if (part.linked) this.skippedLinked += 1;
+        else out.push({ partId: part.partId });
+      }
+      return out;
+    },
+    async finish() {
+      if (this.pending.length) {
+        if (!this.next) await this.loadNext();
+        if (!this.next) return; // prefix problem; the message says why
+        const todo = this.pending;
+        this.pending = [];
+        for (const item of todo) {
+          if (item.partId) this.enqueueRow(item.partId);
+          else this.enqueue(item.selectionId);
+        }
+        el('namerDone').disabled = true;
+        el('namerDone').textContent = 'NAMING…';
+        await this.chain;
+        el('namerDone').disabled = false;
+      }
+      this.close();
     },
     async open() {
       this.active = true;
@@ -1164,13 +1217,14 @@
       el('nameBtn').classList.add('on');
       state.pendingSelection = null;
       updateBanner();
-      this.message(state.kind === 'assembly'
-        ? 'Tap parts in the list below, in order. Parts tagged LINKED (FRC Design App, other documents) can\'t be renamed: Derive them into one of your Part Studios first.'
-        : 'Click each part in Onshape (or tap it in the list), in the order you want them numbered.');
+      this.message('Click each part in Onshape (or tap it in the list), in the order you want them numbered.');
+      this.pending = this.pendingFromSelection();
       await this.loadNext();
     },
     close() {
       this.active = false;
+      this.pending = [];
+      el('namerDone').textContent = 'DONE';
       el('namer').hidden = true;
       el('nameBtn').classList.remove('on');
       if (this.named.length) log(`Named ${this.named.length} part${this.named.length === 1 ? '' : 's'}.`, 'success');
@@ -1288,7 +1342,7 @@
     prefixTimer = setTimeout(() => namer.loadNext(), 400);
   });
   el('nameBtn').addEventListener('click', () => (namer.active ? namer.close() : namer.open()));
-  el('namerDone').addEventListener('click', () => namer.close());
+  el('namerDone').addEventListener('click', () => namer.finish());
   el('namerUndo').addEventListener('click', () => { namer.chain = namer.chain.then(() => namer.undo()); });
 
   // ---- Stepping through the ticked parts -----------------------------------
