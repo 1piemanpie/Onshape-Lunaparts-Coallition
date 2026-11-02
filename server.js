@@ -115,6 +115,8 @@ app.get('/oauth/callback', async (req, res) => {
     }
 
     const tokens = await tokenRes.json();
+    delete req.session.access;
+    delete req.session.onshapeUserName;
     req.session.onshapeTokens = {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
@@ -128,12 +130,21 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Lets the panel's front-end check whether this session is logged in yet.
-app.get('/api/session', (req, res) => {
-  res.json({
-    connected: Boolean(req.session.onshapeTokens),
-    context: req.session.onshapeContext || null,
-  });
+// Lets the panel's front-end check whether this session is logged in yet,
+// and whether this Onshape user is allowed to use the panel at all.
+app.get('/api/session', async (req, res) => {
+  const connected = Boolean(req.session.onshapeTokens);
+  const body = { connected, context: req.session.onshapeContext || null };
+  if (connected) {
+    const access = await checkAccess(req);
+    body.allowed = access.allowed;
+    if (!access.allowed) {
+      body.teamOnly = true;
+      body.reason = access.reason;
+      body.you = { id: access.id || '', name: access.name || '' };
+    }
+  }
+  res.json(body);
 });
 
 // ---- Onshape REST API ---------------------------------------------------
@@ -156,6 +167,79 @@ async function onshapeFetch(req, path, { raw = false, ...options } = {}) {
   }
   return raw ? Buffer.from(await res.arrayBuffer()) : res.json();
 }
+
+// ---- Team-only access ----------------------------------------------------
+// The server uploads with the team's own LUNA Parts key, so only Team 316
+// members may use the panel. ALLOWED_ONSHAPE_USERS (set in Render) is a
+// list of Onshape user IDs and/or emails, separated by commas or spaces.
+// If it's empty, nobody gets in: a public listing must never fall back to
+// "everyone". Each login costs one Onshape call (/users/sessioninfo), which
+// also gives us the user's name for "Uploaded by", so it adds no net calls.
+const TEAM_ONLY_MESSAGE = 'This app is only for FRC Team 316 LUNATECS.';
+
+function allowedUsers() {
+  return new Set(
+    String(process.env.ALLOWED_ONSHAPE_USERS || '')
+      .split(/[\s,;]+/)
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+const accessChecks = new Map(); // sessionID -> in-flight check, so parallel requests share one call
+
+async function checkAccess(req) {
+  if (req.session.access) return req.session.access;
+  if (!req.session.onshapeTokens) return { allowed: false, reason: 'not-logged-in' };
+
+  let pending = accessChecks.get(req.sessionID);
+  if (!pending) {
+    pending = (async () => {
+      const info = await onshapeFetch(req, '/users/sessioninfo');
+      const id = String(info.id || '');
+      const email = String(info.email || '');
+      const name = String(info.name || [info.firstName, info.lastName].filter(Boolean).join(' ') || '').trim().slice(0, 80);
+      const list = allowedUsers();
+      const allowed = Boolean(
+        (id && list.has(id.toLowerCase())) || (email && list.has(email.toLowerCase())),
+      );
+      return { allowed, id, name, reason: allowed ? '' : (list.size ? 'not-on-list' : 'list-empty') };
+    })();
+    accessChecks.set(req.sessionID, pending);
+  }
+
+  try {
+    const access = await pending;
+    req.session.access = access;
+    req.session.onshapeUserName = access.name;
+    if (!access.allowed) {
+      // Shows up in the Render logs, so the ID can be copied into the list.
+      console.log(`Blocked Onshape user ${access.id} (${access.name || 'no name'}): ${access.reason}`);
+    }
+    return access;
+  } catch (err) {
+    // Don't remember a failure (e.g. Onshape busy); the next request tries again.
+    console.error('Onshape access check failed:', err.message);
+    return { allowed: false, reason: 'check-failed' };
+  } finally {
+    accessChecks.delete(req.sessionID);
+  }
+}
+
+// Every panel API (Onshape and LUNA alike) is behind the team check.
+app.use(['/api/onshape', '/api/luna'], async (req, res, next) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Not logged in to Onshape.' });
+  }
+  const access = await checkAccess(req);
+  if (access.allowed) return next();
+  res.status(403).json({
+    error: access.reason === 'check-failed'
+      ? 'Could not check your Onshape account. Close and reopen the panel.'
+      : TEAM_ONLY_MESSAGE,
+    teamOnly: access.reason !== 'check-failed',
+  });
+});
 
 // Onshape's selection messages give the ID of whatever was clicked: the
 // part itself (feature tree) or a face/edge/vertex (3D view). We work out

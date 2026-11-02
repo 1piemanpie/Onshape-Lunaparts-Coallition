@@ -339,6 +339,11 @@
   #logWindow .time { color: var(--muted); }
   #logWindow .success { color: var(--good); }
   #logWindow .error { color: var(--bad); }
+  .team-only { min-height: 100vh; background: var(--bg); }
+  .team-only-body { padding: 20px 16px; color: var(--text); line-height: 1.45; }
+  .team-only-body h2 { font-family: var(--heading); font-size: 24px; text-transform: uppercase; margin: 0 0 10px; }
+  .team-only-body p { margin: 0 0 10px; }
+  .team-only-id { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); user-select: all; word-break: break-all; }
 </style>
 </head>
 
@@ -708,8 +713,37 @@
   // retried a couple of times, since the server may be waking up.
   const LUNA_TRIES = 3;
   async function connect() {
+    // Check first that this Onshape user is on the team's list, so nobody
+    // else ever triggers a LUNA Parts call.
+    try {
+      const session = await getJson('/api/session');
+      if (session.teamOnly) return showTeamOnly(session);
+    } catch (err) { /* loadOnshapeSide reports server trouble below */ }
     loadOnshapeSide();
     await connectLuna();
+  }
+
+  // Shown instead of the panel to anyone not on the team's allowed list.
+  function showTeamOnly(session) {
+    const you = session.you || {};
+    const empty = session.reason === 'list-empty';
+    document.body.innerHTML = `
+      <div class="team-only">
+        <div class="masthead"><header class="top">
+          <img src="/logo-yellow.png" alt="LUNATECS 316" />
+          <div><div class="brand">LUNA PARTS BRIDGE</div><div class="sub">ONSHAPE &rarr; LUNA PARTS</div></div>
+        </header></div>
+        <div class="team-only-body">
+          <h2>This app is only for FRC Team 316 LUNATECS.</h2>
+          <p>It sends parts to our team's own LUNA Parts tracker, so it only works for team members.</p>
+          <p>${empty
+            ? 'The team hasn\u2019t set up its member list yet.'
+            : 'On the team? Send this Onshape ID to whoever runs the app, then close and reopen the panel.'}</p>
+          <p class="team-only-id"></p>
+        </div>
+      </div>`;
+    document.querySelector('.team-only-id').textContent = you.id
+      ? `Your Onshape ID: ${you.id}${you.name ? ` (${you.name})` : ''}` : '';
   }
 
   async function connectLuna() {
