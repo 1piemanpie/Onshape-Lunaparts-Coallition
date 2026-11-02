@@ -242,30 +242,18 @@
     background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 4px; padding: 1px 5px; cursor: pointer;
   }
   .part-row.found .twin { color: #e4e4e7; }
-  /* SEE: a picture of the part, since Onshape can't highlight inside an assembly. */
+  /* Small row buttons (COTS / NOT COTS). */
   .see {
     font-family: var(--heading); font-weight: 700; font-size: 10.5px; letter-spacing: 0.08em;
     color: var(--text); background: #ffffff; border: 1px solid var(--line); border-radius: 4px;
     padding: 1px 5px; cursor: pointer; flex-shrink: 0;
   }
+  #logWindow .calls { color: var(--muted); }
   .see:hover, .see.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   /* A row found by clicking the part in the 3D view. */
   .part-row.found { background: var(--accent); color: #ffffff; transition: background 0.3s; }
   .part-row.found .part-name { color: var(--accent-ink); }
   .part-row.found .part-sub, .part-row.found .qty { color: #e4e4e7; }
-  .peek {
-    position: fixed; z-index: 50; width: 190px; background: #ffffff; border: 1px solid var(--accent);
-    border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); padding: 6px; pointer-events: none;
-  }
-  .peek[hidden] { display: none; }
-  .card-pic { margin: 0 0 10px; border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px; background: #fafafa; }
-  .card-pic[hidden] { display: none; }
-  .card-pic img { display: block; width: 100%; height: 150px; object-fit: contain; cursor: zoom-in; }
-  .card-pic.big img { height: 320px; cursor: zoom-out; }
-  .card-pic figcaption { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
-  .peek img { display: block; width: 100%; height: 160px; object-fit: contain; background: #fafafa; border-radius: 4px; }
-  .peek .peek-name { font-size: 12px; font-weight: 700; margin-top: 5px; }
-  .peek .peek-sub { font-size: 11px; color: var(--muted); }
   /* Assembly hardware sits under a fold at the bottom of the list. */
   .hw-fold { border-top: 1px solid var(--line); }
   .hw-fold summary {
@@ -524,7 +512,7 @@
   </section>
 
   <details>
-    <summary>Sync log</summary>
+    <summary>Sync log <span id="callCount" class="sublabel"></span></summary>
     <div id="logWindow"></div>
   </details>
 
@@ -676,8 +664,37 @@
     footerHint.textContent = message;
   }
 
+  // Onshape caps the app's API calls each year, so the server says how many
+  // each request used; the Sync log adds them up.
+  const onshapeCalls = { panel: 0 };
+  const CALL_LABELS = [
+    [/\/api\/onshape\/parts\?(fresh|refresh)/, 'checking the parts for changes'],
+    [/\/api\/onshape\/parts/, 'loading the parts list'],
+    [/\/api\/onshape\/drawings/, 'listing drawings'],
+    [/\/api\/onshape\/twins/, 'checking for same-shape parts'],
+    [/\/api\/onshape\/selected-part/, 'finding the clicked part'],
+    [/\/api\/onshape\/next-number/, 'finding the next number'],
+    [/\/api\/onshape\/rename/, 'renaming a part'],
+    [/\/api\/onshape\/part-shape/, 'measuring a part'],
+    [/\/api\/onshape\/part-image/, 'the part picture'],
+    [/\/api\/onshape\/make-drawing/, 'making a drawing'],
+    [/\/attachments/, 'exporting files'],
+    [/\/api\/luna\/parts/, 'reading your Onshape name'],
+  ];
+  function countCalls(url, res) {
+    const used = Number(res.headers.get('X-Onshape-Calls')) || 0;
+    const total = res.headers.get('X-Onshape-Calls-Total');
+    if (!used) return;
+    onshapeCalls.panel += used;
+    const label = (CALL_LABELS.find(([re]) => re.test(url)) || [null, 'Onshape'])[1];
+    log(`<span class="calls">${used} Onshape call${used === 1 ? '' : 's'}: ${label}.</span>`);
+    el('callCount').textContent = `\u00b7 ${onshapeCalls.panel} Onshape call${onshapeCalls.panel === 1 ? '' : 's'} since this panel opened`
+      + (total ? ` (${total} on the server since it started)` : '');
+  }
+
   async function getJson(url, options = {}) {
     const res = await fetch(url, { credentials: 'include', ...options });
+    countCalls(url, res);
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(body.error || `Server returned ${res.status}`);
@@ -690,7 +707,6 @@
 
   // ---- Screens -------------------------------------------------------------
   function showScreen(name) {
-    try { peek.reset(); } catch (err) { /* not set up yet during start-up */ }
     for (const s of ['list', 'card', 'done']) {
       el(`${s}Screen`).hidden = s !== name;
       el(`${s}Footer`).hidden = s !== name;
@@ -830,7 +846,6 @@
       log(`${part.name} moved to Hardware & COTS. Tap NOT COTS there to undo.`, 'success');
     }
     try { localStorage.setItem(cotsStoreKey(), JSON.stringify([...marked])); } catch (err) { /* storage blocked */ }
-    peek.reset();
     renderPartList();
   }
 
@@ -865,7 +880,6 @@
   }
 
   function renderPartList() {
-    try { peek.reset(); } catch (err) { /* not set up yet during start-up */ }
     const list = el('partList');
     // Something else (like the LUNA lookup) can finish first; keep saying
     // "Loading" until the parts themselves have arrived.
@@ -973,19 +987,6 @@
         namer.enqueueRow(part.partId);
       });
 
-      const see = document.createElement('button');
-      see.type = 'button';
-      see.className = 'see';
-      see.textContent = 'SEE';
-      see.title = 'Show a picture of this part';
-      see.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        peek.toggle(part, row);
-      });
-      row.addEventListener('mouseenter', () => peek.hoverStart(part, row));
-      row.addEventListener('mouseleave', () => peek.hoverEnd());
-
       // COTS: move a part into the Hardware & COTS fold by hand (and back).
       let cots = null;
       if (part.manualCots || (!isUploaded(part) && part.group !== 'hardware' && part.group !== 'block')) {
@@ -1003,7 +1004,7 @@
         });
       }
 
-      row.append(box, text, see, ...(cots ? [cots] : []), tag);
+      row.append(box, text, ...(cots ? [cots] : []), tag);
       (folds[section(part)] || list).appendChild(row);
     }
     if (folds.uploaded) list.appendChild(folds.uploaded);
@@ -1166,81 +1167,12 @@
     log(`Ticked ${sel.name}${sel.faceId ? ' (with the clicked face for its DXF)' : ''}.`, 'success');
   }
 
-  // ---- Which part is which -------------------------------------------------
-  // Hovering a row (or tapping SEE) shows a picture of the part and its size.
-  // Onshape won't let an app highlight a part inside an assembly, so this is
-  // the safe way to tell rows like "Shaft" apart.
-  const peek = {
-    box: null,
-    pinned: null,
-    timer: null,
-    shown: null,
-    ensureBox() {
-      if (this.box) return this.box;
-      this.box = document.createElement('div');
-      this.box.className = 'peek';
-      this.box.hidden = true;
-      this.box.innerHTML = '<img alt=""><div class="peek-name"></div><div class="peek-sub"></div>';
-      document.body.appendChild(this.box);
-      return this.box;
-    },
-    async show(part, row) {
-      const box = this.ensureBox();
-      this.shown = part.partId;
-      const img = box.querySelector('img');
-      img.src = pictures.get(part.partId) || `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
-      img.alt = part.name;
-      box.querySelector('.peek-name').textContent = lunaNumberFor(part) || part.name;
-      const sub = box.querySelector('.peek-sub');
-      sub.textContent = [part.material, part.quantity > 1 ? `\u00d7${part.quantity}` : ''].filter(Boolean).join(' \u00b7 ') || ' ';
-      const rect = row.getBoundingClientRect();
-      const top = rect.bottom + 230 < window.innerHeight ? rect.bottom + 4 : Math.max(4, rect.top - 234);
-      box.style.top = `${top}px`;
-      box.style.left = `${Math.max(4, Math.min(window.innerWidth - 194, rect.right - 194))}px`;
-      box.hidden = false;
-      if (!part.dims) {
-        try {
-          const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
-          part.dims = body.dims;
-          if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
-        } catch (err) { part.dims = null; }
-      }
-      if (this.shown === part.partId && part.dims) {
-        const size = part.dims.map((d) => d.toFixed(2)).join(' \u00d7 ');
-        sub.textContent = [`${size} in`, sub.textContent.trim()].filter(Boolean).join(' \u00b7 ');
-      }
-    },
-    hide() {
-      if (this.box) this.box.hidden = true;
-      this.shown = null;
-      document.querySelectorAll('.see.on').forEach((b) => b.classList.remove('on'));
-    },
-    toggle(part, row) {
-      clearTimeout(this.timer);
-      if (this.pinned === part.partId) { this.pinned = null; this.hide(); return; }
-      this.hide();
-      this.pinned = part.partId;
-      row.querySelector('.see').classList.add('on');
-      this.show(part, row);
-    },
-    hoverStart(part, row) {
-      if (this.pinned) return;
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => this.show(part, row), pictures.has(part.partId) ? 150 : 350);
-    },
-    hoverEnd() {
-      clearTimeout(this.timer);
-      if (!this.pinned) this.hide();
-    },
-    reset() { this.pinned = null; clearTimeout(this.timer); this.hide(); },
-  };
-
-  // Pictures shown so far (fetched on hover or SEE, not for every part up
-  // front, since Onshape caps how many API calls the app gets a year).
-  const pictures = new Map(); // partId -> object URL
+  // Pictures already fetched this session (part ID -> object URL), so
+  // going back to a card doesn't ask Onshape again.
+  const pictures = new Map();
 
   // Clicking a part in the assembly's 3D view finds its row: opens its fold,
-  // scrolls to it and lights it up, and shows its picture.
+  // scrolls to it and lights it up.
   // The assembly part a 3D-view click (OCCURRENCE selection) belongs to.
   function partForSelection(sel) {
     const path = (sel.occurrencePath || []).join('/');
@@ -1261,8 +1193,6 @@
       document.querySelectorAll('.part-row.found').forEach((r) => r.classList.remove('found'));
       row.classList.add('found');
       setTimeout(() => row.classList.remove('found'), 2500);
-      peek.reset();
-      setTimeout(() => peek.toggle(part, row), 400);
       return;
     }
   }
@@ -1321,9 +1251,16 @@
     renderPartList();
     if (namer.active) namer.render();
   }
-  async function loadTwins() {
+  // Checking costs Onshape calls (mass properties, and the shapes of parts of
+  // the same size), so it's skipped when every part already has a team
+  // number or is in LUNA Parts. NAME runs it then, before numbering.
+  state.twinsChecked = false;
+  async function loadTwins({ force = false } = {}) {
+    state.twinsChecked = false;
     const candidates = state.parts.filter((p) => !p.linked && p.group !== 'hardware' && p.group !== 'block');
-    if (candidates.length < 2) return;
+    if (candidates.length < 2) { state.twinsChecked = true; return; }
+    if (!force && !candidates.some((p) => !TEAM_NAME.test(p.name) && !isUploaded(p))) return;
+    state.twinsChecked = true;
     try {
       const body = await getJson('/api/onshape/twins', {
         method: 'POST',
@@ -1523,6 +1460,8 @@
       updateBanner();
       this.message('Click each part in Onshape (or tap it in the list), in the order you want them numbered.');
       this.pending = this.pendingFromSelection();
+      // Copies share a number, so find them first if that was skipped.
+      if (!state.twinsChecked) await loadTwins({ force: true });
       await this.loadNext();
     },
     close() {
@@ -1859,6 +1798,19 @@
     loadCard();
   }
 
+  // The card's picture costs one Onshape call (kept on the server for 12
+  // hours). Parts already in LUNA Parts skip it.
+  async function loadPicture(part) {
+    if (pictures.has(part.partId)) return pictures.get(part.partId);
+    const url = `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
+    const res = await fetch(url, { credentials: 'include' });
+    countCalls(url, res);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const src = URL.createObjectURL(await res.blob());
+    pictures.set(part.partId, src);
+    return src;
+  }
+
   function showCardPicture(part, number) {
     const fig = el('cardPic');
     const img = el('cardPicImg');
@@ -1866,19 +1818,36 @@
     img.onerror = () => { if (img.dataset.partId === part.partId) fig.hidden = true; };
     img.dataset.partId = part.partId;
     img.alt = number || part.name;
-    img.src = pictures.get(part.partId) || `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
+    img.removeAttribute('src');
+    img.hidden = isUploaded(part);
+    if (!img.hidden) {
+      loadPicture(part).then((src) => { if (img.dataset.partId === part.partId) img.src = src; })
+        .catch(() => { if (img.dataset.partId === part.partId) img.hidden = true; });
+    }
     const named = number && number !== part.name ? `Onshape name: ${part.name}` : '';
     const describe = () => [named, part.dims ? `${part.dims.map((d) => d.toFixed(2)).join(' \u00d7 ')} in` : '',
       part.quantity > 1 ? `\u00d7${part.quantity} in the assembly` : ''].filter(Boolean).join(' \u00b7 ');
     sub.textContent = describe();
     fig.hidden = false;
     if (part.dims === undefined) {
-      getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`).then((body) => {
-        part.dims = body.dims;
-        if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+      fetchShape(part).then(() => {
         if (img.dataset.partId === part.partId) sub.textContent = describe();
       }).catch(() => {});
     }
+  }
+
+  // The part's size: one request per part, shared by the picture caption and
+  // the Machine/Thickness guess.
+  function fetchShape(part) {
+    if (!part.shapeRequest) {
+      part.shapeRequest = getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`).then((body) => {
+        part.dims = body.dims;
+        if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+        return body;
+      });
+      part.shapeRequest.catch(() => { part.shapeRequest = null; });
+    }
+    return part.shapeRequest;
   }
   el('cardPicImg').addEventListener('click', () => el('cardPic').classList.toggle('big'));
 
@@ -1951,9 +1920,7 @@
   async function loadShape(part) {
     if (part.shape !== undefined) return applyShape(part);
     try {
-      const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
-      part.shape = body.shape;
-      part.thickness = body.thickness;
+      await fetchShape(part);
     } catch (err) {
       part.shape = null;
       log(`Couldn't measure ${part.name}: ${err.message}`, 'error');
