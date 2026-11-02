@@ -3,6 +3,7 @@ const session = require('express-session');
 const crypto = require('crypto');
 const path = require('path');
 const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace, REAM_UNDERSIZE_IN } = require('./dxf');
+const { compareBodies } = require('./twins');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -552,6 +553,139 @@ app.get('/api/onshape/part-image', async (req, res) => {
     res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=900').send(png);
   } catch (err) {
     console.error('Part image failed:', err.message);
+    res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
+  }
+});
+
+// Twins: separate bodies with the same shape (a part copied in the Part
+// Studio and given its own name) should share one part number. Mass
+// properties find parts of the same size; twins.js then lines them up point
+// by point: a copy (or a mirror of a symmetric part) shares the number, a
+// true left/right mirror pair gets two numbers, and a part too symmetric to
+// line up is left for the user to decide (SAME PART).
+const massCache = new Map();
+function firstNumber(v) { return Array.isArray(v) ? Number(v[0]) : Number(v); }
+
+function partMassProps(req, source) {
+  const key = sourceKey(req, asSource(source));
+  const cached = massCache.get(key);
+  if (cached && Date.now() - cached.at < 60 * 1000) return cached.props;
+  if (massCache.size > 200) massCache.clear();
+  const props = onshapeFetch(req, `/partstudios/${source.dwe}/massproperties${sourceQuery(source, new URLSearchParams({ massAsGroup: 'false' }))}`)
+    .then((body) => {
+      const out = new Map();
+      for (const [partId, b] of Object.entries(body.bodies || {})) {
+        if (partId === '-all-') continue;
+        const volume = firstNumber(b.volume);
+        const area = firstNumber(b.periphery);
+        const mass = firstNumber(b.mass);
+        const moments = (b.principalInertia || []).map(firstNumber);
+        out.set(partId, {
+          volume,
+          area,
+          moments: mass > 0 && moments.length === 3 ? moments.map((m) => m / mass).sort((x, y) => x - y) : null,
+        });
+      }
+      return out;
+    })
+    .catch((err) => {
+      massCache.delete(key);
+      throw err;
+    });
+  massCache.set(key, { at: Date.now(), props });
+  return props;
+}
+
+// A first, cheap filter: copies agree to about 0.00001% in tests; 0.01%
+// leaves room for Onshape's rounding. The point check makes the real call.
+function sameShape(a, b) {
+  const close = (x, y, tol) => Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y), 1e-12);
+  if (!(a.volume > 0) || !close(a.volume, b.volume, 1e-4) || !close(a.area, b.area, 1e-4)) return false;
+  if (a.moments && b.moments) return a.moments.every((m, i) => close(m, b.moments[i], 1e-3));
+  return true;
+}
+
+app.post('/api/onshape/twins', express.json(), async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const ids = (Array.isArray(req.body && req.body.partIds) ? req.body.partIds : [])
+    .map(String).filter((id) => /^[\x21-\x7E]{1,128}$/.test(id)).slice(0, 500);
+
+  try {
+    const resolved = [];
+    for (const id of ids) {
+      try {
+        resolved.push({ id, ...(await resolvePart(req, id)) });
+      } catch (err) { /* gone from the list; skip */ }
+    }
+    const bySource = new Map();
+    for (const r of resolved) {
+      const key = sourceKey(req, r.source);
+      if (!bySource.has(key)) bySource.set(key, { source: r.source, parts: [] });
+      bySource.get(key).parts.push(r);
+    }
+    const fingerprints = [];
+    await Promise.all([...bySource.values()].map(async ({ source, parts }) => {
+      try {
+        const props = await partMassProps(req, source);
+        for (const r of parts) {
+          const fp = props.get(r.partId);
+          if (fp) fingerprints.push({ ...r, fp });
+        }
+      } catch (err) {
+        console.error('Mass properties failed:', err.message);
+      }
+    }));
+
+    // Same size by mass properties first (cheap), then line the parts up
+    // point by point to tell copies from mirror images and near-misses.
+    const sized = [];
+    const used = new Set();
+    for (let i = 0; i < fingerprints.length; i += 1) {
+      if (used.has(i)) continue;
+      const group = [fingerprints[i]];
+      for (let j = i + 1; j < fingerprints.length; j += 1) {
+        if (!used.has(j) && sameShape(fingerprints[i].fp, fingerprints[j].fp)) { group.push(fingerprints[j]); used.add(j); }
+      }
+      if (group.length > 1) sized.push(group);
+    }
+
+    const bodyOf = async (r) => {
+      try {
+        const index = await getPartIndex(req, r.source);
+        return index.bodiesById.get(r.partId) || null;
+      } catch (err) {
+        return null;
+      }
+    };
+    const out = [];
+    for (const group of sized) {
+      // Copies collect into clusters; each pair of clusters is a mirror
+      // pair, unknown (ask), or different (left alone).
+      const clusters = [];
+      for (const member of group) {
+        const body = await bodyOf(member);
+        const relations = [];
+        let home = null;
+        for (const cluster of clusters) {
+          const relation = body && cluster.body ? compareBodies(cluster.body, body) : 'unknown';
+          if (relation === 'same') { home = cluster; break; }
+          relations.push({ cluster, relation });
+        }
+        if (home) { home.ids.push(member.id); continue; }
+        const cluster = { ids: [member.id], body, links: relations };
+        clusters.push(cluster);
+      }
+      for (const cluster of clusters) {
+        if (cluster.ids.length > 1) out.push({ ids: cluster.ids, relation: 'same' });
+        for (const { cluster: other, relation } of cluster.links) {
+          if (relation === 'mirror' || relation === 'unknown') out.push({ ids: [...other.ids, ...cluster.ids], relation });
+        }
+      }
+    }
+    res.json({ groups: out });
+  } catch (err) {
+    console.error('Twin check failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
   }
 });
