@@ -557,6 +557,7 @@
   // PDF attached in the background while the next part is filled in.
   const state = {
     context: null,
+    drawingRuns: new Map(), // partId -> pending make-drawing request, so each part makes one at a time
     drawings: [],
     parts: [],             // [{ partId, name, material, quantity, group }] from Onshape
     kind: 'partstudio',    // or 'assembly'
@@ -2084,7 +2085,8 @@
       }
       log(`Created ${created.partNumber} "${created.name}" in LUNA Parts (id ${created.id}).`, 'success');
 
-      if (!job.drawingId && job.autoDraw) {
+      // Also wait for a drawing the MAKE DRAWING button started on this card.
+      if (!job.drawingId && (job.autoDraw || state.drawingRuns.has(job.onshapePart.partId))) {
         result.detail = 'Making a drawing in Onshape…';
         renderUploadProgress();
         const made = await makeDrawingFor(job.onshapePart, {
@@ -2185,7 +2187,11 @@
         ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
         : 'DXF of the largest flat face';
     const noDxf = toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
-    el('makeDrawingBtn').hidden = Boolean(drawingSelect.value) || !canDraw(part);
+    const drawBtn = el('makeDrawingBtn');
+    const making = state.drawingRuns.has(part.partId);
+    drawBtn.hidden = (Boolean(drawingSelect.value) && !making) || !canDraw(part);
+    drawBtn.disabled = making;
+    drawBtn.textContent = making ? 'MAKING…' : 'MAKE DRAWING';
     if (!drawingSelect.value && canDraw(part) && el('autoDrawInput').checked) {
       attachHint.className = 'hint left';
       attachHint.textContent = dxf
@@ -2260,7 +2266,20 @@
 
   // Asks the server to make the drawing; returns { drawingId, name } or null.
   // Problems are logged, never thrown, so an upload carries on without it.
-  async function makeDrawingFor(part, { partNumber, quantity, material }) {
+  // A second ask for the same part (the button, then Upload) waits for the
+  // first request instead of making a duplicate drawing.
+  function makeDrawingFor(part, opts) {
+    const running = state.drawingRuns.get(part.partId);
+    if (running) return running;
+    const run = requestDrawing(part, opts).finally(() => {
+      state.drawingRuns.delete(part.partId);
+      updateAttachHint();
+    });
+    state.drawingRuns.set(part.partId, run);
+    return run;
+  }
+
+  async function requestDrawing(part, { partNumber, quantity, material }) {
     try {
       const body = await getJson('/api/onshape/make-drawing', {
         method: 'POST',
@@ -2288,16 +2307,13 @@
   async function makeDrawingNow() {
     const part = currentPart();
     if (!part) return;
-    const button = el('makeDrawingBtn');
-    button.disabled = true;
-    button.textContent = 'MAKING…';
-    const made = await makeDrawingFor(part, {
+    const pending = makeDrawingFor(part, {
       partNumber: el('partNumberInput').value.trim() || part.name,
       quantity: Number(el('quantityInput').value) || 1,
       material: el('materialInput').value.trim(),
     });
-    button.disabled = false;
-    button.textContent = 'MAKE DRAWING';
+    updateAttachHint();
+    const made = await pending;
     if (made && made.failed) {
       showToast(`Drawing failed: ${made.error}`, 6000);
       return;
