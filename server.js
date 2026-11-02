@@ -1160,6 +1160,20 @@ function optionalNumber(value, { integer = false } = {}) {
   return n;
 }
 
+// The signed-in Onshape user's name, read once per session.
+async function onshapeUserName(req) {
+  if (req.session.onshapeUserName !== undefined) return req.session.onshapeUserName;
+  try {
+    const info = await onshapeFetch(req, '/users/sessioninfo');
+    const name = String(info.name || [info.firstName, info.lastName].filter(Boolean).join(' ') || '').trim().slice(0, 80);
+    req.session.onshapeUserName = name;
+    return name;
+  } catch (err) {
+    console.error('Onshape user lookup failed:', err.message);
+    return '';
+  }
+}
+
 app.post('/api/luna/parts', express.json(), async (req, res) => {
   if (!req.session.onshapeTokens) {
     return res.status(401).json({ error: 'Log in with Onshape first.' });
@@ -1194,6 +1208,11 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
   }
   if (problems.length) return res.status(400).json({ error: problems.join(' ') });
 
+  // Everyone uploads through the panel's one LUNA key, so the notes say
+  // which Onshape user made the part.
+  const who = await onshapeUserName(req);
+  const notes = who ? [`Uploaded by ${who} (Onshape)`] : [];
+
   // A linked assembly part gets the tag that ties its LUNA number to it.
   const panelPartId = String(b.onshapePartId || '');
   if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
@@ -1202,11 +1221,13 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
       const part = list.byId.get(panelPartId);
       const ctx = req.session.onshapeContext;
       const key = part && !isLocalSource(ctx, part.source) && linkedPartKey(ctx, part.source, part.partId);
-      if (key) fields.notes = `[onshape:${key}]`;
+      if (key) notes.push(`[onshape:${key}]`);
     } catch (err) {
       console.error('Linked part lookup failed:', err.message);
     }
   }
+
+  if (notes.length) fields.notes = notes.join('\n');
 
   try {
     if (fields.part_number) {
