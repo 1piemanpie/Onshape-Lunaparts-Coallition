@@ -214,12 +214,13 @@ function viewSetup(info) {
 
 // Picks the biggest scale that fits, and where each view's centre goes.
 // Sizes are in inches on the sheet.
-function planDrawing(info, { qty = 1, material = '', partNumber = '', smallerThan = null } = {}) {
+function planDrawing(info, { qty = 1, material = '', partNumber = '', partName = '', smallerThan = null } = {}) {
   const W = info.ext[info.horizontal];
   const H = info.ext[info.vertical];
   const D = info.ext[3 - info.horizontal - info.vertical];
   const { orientation, rotation } = viewSetup(info);
-  const notes = [`Qty: ${qty} PCS`];
+  // First line: what the part is (the LUNA number and name).
+  const notes = [[partNumber, partName].filter(Boolean).join(' - '), `Qty: ${qty} PCS`].filter(Boolean);
   const roomW = SHEET.right - SHEET.left;
   const roomH = SHEET.top - SHEET.bottom;
   let views = null;
@@ -894,11 +895,11 @@ async function readLayout(api, ctx, eid, plan, createdIds, exportJson) {
 // a crowded drawing gets the "needs a check" note instead.
 const MAX_LAYOUT_TRIES = 1;
 
-async function makeDrawing({ api: rawApi, ctx, reference, body, box, name, partNumber, qty, material, exportJson }) {
+async function makeDrawing({ api: rawApi, ctx, reference, body, box, name, partNumber, partName = '', qty, material, exportJson }) {
   let calls = 0;
   const api = (...args) => { calls += 1; return rawApi(...args); };
   const info = analyzePart(body, box);
-  let plan = planDrawing(info, { qty, material, partNumber });
+  let plan = planDrawing(info, { qty, material, partNumber, partName });
   const warnings = [...info.warnings];
 
   const created = await createDrawingElement(api, ctx, name);
@@ -927,7 +928,7 @@ async function makeDrawing({ api: rawApi, ctx, reference, body, box, name, partN
     const count = (result.issues || []).length;
     if (!best || count < best.result.issues.length) best = { plan, result };
     if (!count || attempt === MAX_LAYOUT_TRIES - 1) break;
-    const smaller = planDrawing(info, { qty, material, partNumber, smallerThan: plan.scale });
+    const smaller = planDrawing(info, { qty, material, partNumber, partName, smallerThan: plan.scale });
     if (smaller.s >= plan.s) break;
     try {
       await modify(api, ctx, eid, 'Rescale views', { messageName: 'onshapeEditViews', views: editViewRequests(smaller, createdIds.map((c) => c.logicalId)) }, 'rescale the views');
