@@ -1148,6 +1148,35 @@ app.get('/api/onshape/drawings', async (req, res) => {
 // Makes an Onshape drawing for a part that doesn't have one yet, in the
 // team's layout for its type (see drawings.js). The new tab is named
 // "<part number> Drawing 1", so the panel's drawing matching picks it up.
+// Onshape's title block shows the drawn part's own properties (Part number,
+// Title 1, Description), and the team keeps its number in the part's name
+// instead, so those boxes came out as "----". Before a drawing of a part
+// from this document is made, its properties are filled from the card.
+// Two calls: read the properties, then write the ones that differ.
+const TITLE_PROPS = [['Part number', 'number'], ['Title 1', 'name'], ['Description', 'name']];
+async function fillPartProperties(req, source, partId, values) {
+  const query = source.configuration && source.configuration !== 'default'
+    ? `?configuration=${encodeURIComponent(source.configuration)}` : '';
+  const path = `/metadata/${source.dwe}/p/${encodeURIComponent(partId)}${query}`;
+  const meta = await onshapeFetch(req, path);
+  const props = meta.properties || [];
+  const changes = [];
+  for (const [propName, key] of TITLE_PROPS) {
+    const value = values[key];
+    const prop = props.find((p) => p.name === propName && p.editable !== false);
+    if (!value || !prop || String(prop.value || '') === value) continue;
+    // Leave a Description someone typed in Onshape alone.
+    if (propName === 'Description' && prop.value) continue;
+    changes.push({ propertyId: prop.propertyId, value });
+  }
+  if (!changes.length) return [];
+  await onshapeFetch(req, path, {
+    method: 'POST',
+    body: JSON.stringify({ jsonType: 'metadata-part', partId, properties: changes }),
+  });
+  return changes;
+}
+
 // Drawings being made right now, by document + part number. If the panel
 // reloads while a drawing is being made, it asks again; that ask waits for
 // the first one instead of making a second drawing.
@@ -1200,7 +1229,20 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
       || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
     const key = partNumber.split(/\s+/)[0].toUpperCase();
     const existing = drawings.find((e) => String(e.name || '').split(/\s+/)[0].toUpperCase() === key);
-    if (existing && !b.force) return res.json({ drawingId: existing.id, name: existing.name, existing: true, warnings: [] });
+    if (existing && !b.force) {
+      // The title block reads the part's properties live, so filling them
+      // also fixes a drawing made before they were filled.
+      const warnings = [];
+      if (reference.elementId === eid && !reference.documentId) {
+        try {
+          await fillPartProperties(req, source, sourcePartId, { number: partNumber, name: partName });
+        } catch (err) {
+          console.error('Filling part properties failed:', err.message);
+          warnings.push(`Couldn't fill the title block's part number and title (${err.status || err.message}).`);
+        }
+      }
+      return res.json({ drawingId: existing.id, name: existing.name, existing: true, warnings });
+    }
     let n = 1;
     const names = new Set(drawings.map((e) => e.name));
     while (names.has(`${partNumber} Drawing ${n}`)) n += 1;
@@ -1210,6 +1252,21 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     const body = index.bodiesById.get(sourcePartId);
     if (!body) return res.status(404).json({ error: 'Couldn\'t read the part\'s shape from Onshape.' });
     const box = await partBox(req, source, sourcePartId);
+
+    // Fill the title block's part number and title (parts from this document
+    // only; linked parts can't be changed from here). Done after the shape
+    // reads, since any edit makes the document's cached data look stale.
+    const titleWarnings = [];
+    if (reference.elementId === eid && !reference.documentId) {
+      try {
+        await fillPartProperties(req, source, sourcePartId, { number: partNumber, name: partName });
+      } catch (err) {
+        console.error('Filling part properties failed:', err.message);
+        titleWarnings.push(`Couldn't fill the title block's part number and title (${err.status || err.message}).`);
+      }
+    } else {
+      titleWarnings.push('This part is linked from another document, so the title block\'s part number and title stay empty. The notes at the top left have them.');
+    }
 
     const result = await makeDrawing({
       api: (path, options) => onshapeFetch(req, path, options),
@@ -1228,6 +1285,7 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     });
     // The document now has a new tab; the next Drawing list reads it again.
     elementLists.delete(docKeyOf(ctx));
+    result.warnings = [...titleWarnings, ...(result.warnings || [])];
     finish.resolve(result);
     res.json(result);
   } catch (err) {
