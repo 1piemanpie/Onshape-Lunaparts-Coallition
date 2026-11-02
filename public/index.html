@@ -76,6 +76,9 @@
   .status.good .dot { background: var(--good); }
   .status.bad .dot { background: var(--bad); }
   .status.bad { color: var(--bad); }
+  .status.pending .dot { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+  .status a { color: inherit; font-weight: 700; margin-left: 4px; cursor: pointer; }
 
   /* ---- Form ---- */
   .card {
@@ -357,7 +360,7 @@
   <section id="listScreen">
     <div class="field">
       <label for="projectSelect">Project <span class="sublabel">(applies to all parts)</span></label>
-      <select id="projectSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+      <select id="projectSelect" disabled><option value="">Loading projects&hellip;</option></select>
     </div>
 
     <div class="list-head">
@@ -400,7 +403,7 @@
         <label for="cardProjectSelect">Project<span class="req">*</span> <span id="projectWhy" class="sublabel"></span></label>
         <!-- Each LUNA project is a robot subsystem; picked from the part
              number (26O-E001 -> the Elevator project) when it can be. -->
-        <select id="cardProjectSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
+        <select id="cardProjectSelect" disabled><option value="">Loading projects&hellip;</option></select>
       </div>
       <div class="field">
         <label for="nameInput">Name<span class="req">*</span></label>
@@ -615,9 +618,15 @@
     logWindow.scrollTop = logWindow.scrollHeight;
   }
 
-  function setStatus(text, kind) {
+  function setStatus(text, kind, retry) {
     statusBox.className = `status ${kind}`;
     statusText.textContent = text;
+    if (retry) {
+      const link = document.createElement('a');
+      link.textContent = 'Try again';
+      link.addEventListener('click', retry);
+      statusText.appendChild(link);
+    }
   }
 
   function fillSelect(select, items, placeholder, label = (item) => item.name) {
@@ -666,39 +675,69 @@
   }
 
   // ---- Load projects/tools/thicknesses from LUNA Parts (read-only) -------
+  // The Onshape side (session, parts list) loads on its own, so the part list
+  // still appears while LUNA Parts is slow or down. A failed LUNA load is
+  // retried a couple of times, since the server may be waking up.
+  const LUNA_TRIES = 3;
   async function connect() {
-    log('Loading lists from LUNA Parts&hellip;');
+    loadOnshapeSide();
+    await connectLuna();
+  }
 
-    try {
-      const res = await fetch('/api/luna/options', { credentials: 'include' });
-      const body = await res.json().catch(() => ({}));
+  async function connectLuna() {
+    for (const s of [projectSelect, cardProjectSelect]) {
+      s.innerHTML = '<option value="">Loading projects&hellip;</option>';
+      s.disabled = true;
+    }
+    for (let attempt = 1; attempt <= LUNA_TRIES; attempt += 1) {
+      setStatus(attempt === 1 ? 'Connecting to LUNA Parts\u2026' : `Still connecting to LUNA Parts (try ${attempt} of ${LUNA_TRIES})\u2026`, 'pending');
+      if (attempt === 1) log('Loading lists from LUNA Parts&hellip;');
+      try {
+        const res = await fetch('/api/luna/options', { credentials: 'include' });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          setStatus('Not logged in to Onshape', 'bad');
+          log('Log in with Onshape first: <a href="/oauth/login">connect</a>', 'error');
+          return;
+        }
+        if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
 
-      if (res.status === 401) {
-        setStatus('Not logged in to Onshape', 'bad');
-        log('Log in with Onshape first: <a href="/oauth/login">connect</a>', 'error');
+        setStatus('Loading projects\u2026', 'pending');
+        state.projects = body.projects;
+        state.tools = body.tools;
+        fillSelect(projectSelect, body.projects, body.projects.length ? 'Select project' : 'No projects');
+        fillSelect(cardProjectSelect, body.projects, 'Select project');
+        fillSelect(toolSelect, body.tools, 'Select tool');
+        fillSelect(thicknessSelect, body.thicknesses, 'Select thickness');
+
+        setStatus('Connected to LUNA Parts', 'good');
+        log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
+        loadStatuses();
+        loadUploaded();
+        if (state.context) restoreProject();
+        updateListFooter();
         return;
+      } catch (err) {
+        log(`LUNA Parts: ${err.message}`, 'error');
+        if (attempt < LUNA_TRIES) await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
-      if (!res.ok) throw new Error(body.error || `Server returned ${res.status}`);
+    }
+    setStatus('Could not reach LUNA Parts.', 'bad', () => connectLuna());
+    for (const s of [projectSelect, cardProjectSelect, toolSelect, thicknessSelect]) {
+      s.innerHTML = '<option value="">Unavailable</option>';
+    }
+    updateListFooter();
+  }
 
-      state.projects = body.projects;
-      state.tools = body.tools;
-      fillSelect(projectSelect, body.projects, body.projects.length ? 'Select project' : 'No projects');
-      fillSelect(cardProjectSelect, body.projects, 'Select project');
-      fillSelect(toolSelect, body.tools, 'Select tool');
-      fillSelect(thicknessSelect, body.thicknesses, 'Select thickness');
-
-      setStatus('Connected to LUNA Parts', 'good');
-      log(`Loaded ${body.projects.length} projects, ${body.tools.length} tools, ${body.thicknesses.length} thicknesses.`, 'success');
-      loadStatuses();
-      loadUploaded();
-
+  async function loadOnshapeSide() {
+    try {
       // Set when the panel was opened from inside Onshape (the extension's Action URL).
       const session = await getJson('/api/session');
       state.context = session.context;
       if (session.context) {
         el('docInfo').textContent = `DOC ${session.context.documentId.slice(0, 6)}`;
         log(`Opened in Onshape document ${session.context.documentId.slice(0, 6)}&hellip;`);
-        restoreProject();
+        if (state.projects) restoreProject();
         loadDrawings();
         listenForSelections(session.context);
         loadParts();
@@ -708,13 +747,9 @@
         fillSelect(drawingSelect, [], 'Only available inside Onshape');
       }
     } catch (err) {
-      setStatus('Could not reach LUNA Parts', 'bad');
-      for (const s of [projectSelect, toolSelect, thicknessSelect]) {
-        s.innerHTML = '<option value="">Unavailable</option>';
-      }
+      el('partList').innerHTML = '<p class="chip-empty">Couldn\u2019t reach the panel\u2019s server. Close and reopen the panel.</p>';
       log(err.message, 'error');
     }
-    updateListFooter();
   }
 
   // ---- Parent Assembly depends on the chosen project ---------------------
