@@ -311,7 +311,13 @@ async function ownerViaFeatureScript(req, dwe, selectionId) {
   return ids.map((v) => v.value)[0] || null;
 }
 
+// 402 is Onshape's yearly API call limit: apps that aren't in the Onshape
+// App Store get a fixed number of calls a year, and after that every call
+// is refused until Onshape adds more.
+const API_LIMIT_MESSAGE = 'Onshape has refused the request (402): the yearly limit on API calls for this app has been used up. '
+  + 'Ask Onshape for more at api-support@onshape.com.';
 function onshapeErrorMessage(err) {
+  if (err.status === 402) return API_LIMIT_MESSAGE;
   return err.status === 401
     ? 'Your Onshape login expired. Close and reopen the panel.'
     : `Could not read parts from Onshape (${err.status || 'network error'}).`;
@@ -497,6 +503,10 @@ async function resolvePart(req, partId) {
 // The part's overall size, to tell shafts from plates (for the Machine guess)
 // and a plate's thickness (for the Thickness guess).
 const METERS_PER_INCH = 0.0254;
+// Part sizes and pictures barely change, and Onshape caps how many API
+// calls the app gets a year, so they're kept for 12 hours.
+const PART_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const partShapes = new Map();
 
 app.get('/api/onshape/part-shape', async (req, res) => {
   const dwe = currentDwe(req);
@@ -506,6 +516,10 @@ app.get('/api/onshape/part-shape', async (req, res) => {
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
+    // Saved for a while, shared by everyone, since Onshape limits API calls.
+    const key = `${source.dwe}|${source.configuration || ''}|${sourcePartId}`;
+    const cached = partShapes.get(key);
+    if (cached && Date.now() - cached.at < PART_CACHE_MAX_AGE_MS) return res.json(cached.body);
     const box = await onshapeFetch(req,
       `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/boundingboxes${sourceQuery(source)}`);
     const dims = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
@@ -515,7 +529,10 @@ app.get('/api/onshape/part-shape', async (req, res) => {
     let shape = 'block';
     if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
     else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
-    res.json({ shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null });
+    const body = { shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null };
+    if (partShapes.size > 2000) partShapes.clear();
+    partShapes.set(key, { body, at: Date.now() });
+    res.json(body);
   } catch (err) {
     console.error('Part shape lookup failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
@@ -526,7 +543,7 @@ app.get('/api/onshape/part-shape', async (req, res) => {
 // identified without touching the 3D view (Onshape can't highlight a part
 // inside an assembly from an app; trying froze the feature list, PR #20).
 const partImages = new Map();
-const PART_IMAGE_MAX_AGE_MS = 15 * 60 * 1000;
+const PART_IMAGE_MAX_AGE_MS = PART_CACHE_MAX_AGE_MS;
 app.get('/api/onshape/part-image', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
@@ -535,7 +552,7 @@ app.get('/api/onshape/part-image', async (req, res) => {
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
-    // Shared by everyone who opens the same Part Studio, for 15 minutes.
+    // Shared by everyone who opens the same Part Studio, for 12 hours.
     const key = `${source.dwe}|${source.configuration || ''}|${sourcePartId}`;
     const cached = partImages.get(key);
     let png = cached && Date.now() - cached.at < PART_IMAGE_MAX_AGE_MS ? cached.png : null;
@@ -551,7 +568,7 @@ app.get('/api/onshape/part-image', async (req, res) => {
       if (partImages.size > 300) partImages.clear();
       partImages.set(key, { png, at: Date.now() });
     }
-    res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=900').send(png);
+    res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=43200').send(png);
   } catch (err) {
     console.error('Part image failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
@@ -972,7 +989,7 @@ app.get('/api/onshape/drawings', async (req, res) => {
     });
   } catch (err) {
     console.error('Onshape drawings lookup failed:', err);
-    res.status(502).json({ error: 'Could not list drawings from Onshape.' });
+    res.status(502).json({ error: err.status === 402 ? API_LIMIT_MESSAGE : 'Could not list drawings from Onshape.' });
   }
 });
 
@@ -1046,7 +1063,7 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
         needsWrite: true,
       });
     }
-    res.status(502).json({ error: err.status === 401 ? onshapeErrorMessage(err) : err.status ? `Onshape couldn't make the drawing (${err.status}): ${String(err.message).split(': ').slice(1).join(': ').slice(0, 200)}` : err.message });
+    res.status(502).json({ error: err.status === 401 || err.status === 402 ? onshapeErrorMessage(err) : err.status ? `Onshape couldn't make the drawing (${err.status}): ${String(err.message).split(': ').slice(1).join(': ').slice(0, 200)}` : err.message });
   }
 });
 
