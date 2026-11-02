@@ -255,6 +255,11 @@
     border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); padding: 6px; pointer-events: none;
   }
   .peek[hidden] { display: none; }
+  .card-pic { margin: 0 0 10px; border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px; background: #fafafa; }
+  .card-pic[hidden] { display: none; }
+  .card-pic img { display: block; width: 100%; height: 150px; object-fit: contain; cursor: zoom-in; }
+  .card-pic.big img { height: 320px; cursor: zoom-out; }
+  .card-pic figcaption { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
   .peek img { display: block; width: 100%; height: 160px; object-fit: contain; background: #fafafa; border-radius: 4px; }
   .peek .peek-name { font-size: 12px; font-weight: 700; margin-top: 5px; }
   .peek .peek-sub { font-size: 11px; color: var(--muted); }
@@ -404,6 +409,12 @@
     </div>
     <p id="uploadStatus" class="upload-status"></p>
     <h2 id="cardTitle" class="card-title"></h2>
+    <!-- A picture of the part, so it's clear which one this is (an
+         assembly can't highlight it in 3D). Tap to make it bigger. -->
+    <figure id="cardPic" class="card-pic" hidden>
+      <img id="cardPicImg" alt="" title="Tap to make bigger" />
+      <figcaption id="cardPicSub"></figcaption>
+    </figure>
 
     <form id="partForm" class="card" autocomplete="off">
       <div class="field full">
@@ -1659,6 +1670,29 @@
     loadCard();
   }
 
+  function showCardPicture(part, number) {
+    const fig = el('cardPic');
+    const img = el('cardPicImg');
+    const sub = el('cardPicSub');
+    img.onerror = () => { if (img.dataset.partId === part.partId) fig.hidden = true; };
+    img.dataset.partId = part.partId;
+    img.alt = number || part.name;
+    img.src = pictures.get(part.partId) || `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
+    const named = number && number !== part.name ? `Onshape name: ${part.name}` : '';
+    const describe = () => [named, part.dims ? `${part.dims.map((d) => d.toFixed(2)).join(' \u00d7 ')} in` : '',
+      part.quantity > 1 ? `\u00d7${part.quantity} in the assembly` : ''].filter(Boolean).join(' \u00b7 ');
+    sub.textContent = describe();
+    fig.hidden = false;
+    if (part.dims === undefined) {
+      getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`).then((body) => {
+        part.dims = body.dims;
+        if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+        if (img.dataset.partId === part.partId) sub.textContent = describe();
+      }).catch(() => {});
+    }
+  }
+  el('cardPicImg').addEventListener('click', () => el('cardPic').classList.toggle('big'));
+
   function loadCard() {
     const part = currentPart();
     resetPartFields();
@@ -1668,6 +1702,7 @@
     // the next free one in the series is filled in.
     const number = part.linked ? lunaNumberFor(part) : part.name;
     el('cardTitle').textContent = number || part.name;
+    showCardPicture(part, number);
     el('cardCount').textContent = `${state.step + 1} of ${state.queue.length}`;
     renderUploadProgress();
     el('partNumberInput').value = number;
