@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace, REAM_UNDERSIZE_IN } = require('./dxf');
 const { compareBodies } = require('./twins');
+const { makeDrawing } = require('./drawings');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -961,6 +962,80 @@ app.get('/api/onshape/drawings', async (req, res) => {
   } catch (err) {
     console.error('Onshape drawings lookup failed:', err);
     res.status(502).json({ error: 'Could not list drawings from Onshape.' });
+  }
+});
+
+// Makes an Onshape drawing for a part that doesn't have one yet, in the
+// team's layout for its type (see drawings.js). The new tab is named
+// "<part number> Drawing 1", so the panel's drawing matching picks it up.
+app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const b = req.body || {};
+  const partId = String(b.partId || '');
+  const partNumber = String(b.partNumber || '').trim();
+  const qty = Math.max(1, Math.min(9999, parseInt(b.quantity, 10) || 1));
+  const material = String(b.material || '').slice(0, 80);
+  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+  if (!partNumber || partNumber.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
+
+  try {
+    const { source, partId: sourcePartId } = await resolvePart(req, partId);
+    const m = source.dwe.match(/^d\/([0-9a-f]{24})\/(w|v|m)\/([0-9a-f]{24})\/e\/([0-9a-f]{24})$/);
+    if (!m) return res.status(400).json({ error: 'Couldn\'t find the part\'s Part Studio.' });
+    const [, did, wvm, wvmId, eid] = m;
+    // A drawing can show a part from this document, or from a saved version
+    // of another document, but not another document's live workspace.
+    let reference;
+    if (did === ctx.documentId && wvm === 'w') reference = { elementId: eid, idTag: sourcePartId };
+    else if (wvm === 'v') reference = { documentId: did, versionId: wvmId, elementId: eid, idTag: sourcePartId };
+    else return res.status(409).json({ error: 'This part comes from another document that isn\'t at a saved version, so no drawing can be made here.' });
+    if (source.configuration) reference.configuration = source.configuration;
+
+    // Don't make a second drawing when one already exists for this part.
+    const elements = await onshapeFetch(req, `/documents/d/${ctx.documentId}/w/${ctx.workspaceId}/elements`);
+    const drawings = elements.filter((e) => e.elementType === 'DRAWING'
+      || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
+    const key = partNumber.split(/\s+/)[0].toUpperCase();
+    const existing = drawings.find((e) => String(e.name || '').split(/\s+/)[0].toUpperCase() === key);
+    if (existing && !b.force) return res.json({ drawingId: existing.id, name: existing.name, existing: true, warnings: [] });
+    let n = 1;
+    const names = new Set(drawings.map((e) => e.name));
+    while (names.has(`${partNumber} Drawing ${n}`)) n += 1;
+    const name = `${partNumber} Drawing ${n}`;
+
+    let index = await getPartIndex(req, source);
+    if (!index.bodiesById.has(sourcePartId)) index = await getPartIndex(req, source, { refresh: true });
+    const body = index.bodiesById.get(sourcePartId);
+    if (!body) return res.status(404).json({ error: 'Couldn\'t read the part\'s shape from Onshape.' });
+    const box = await onshapeFetch(req,
+      `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/boundingboxes${sourceQuery(source)}`);
+
+    const result = await makeDrawing({
+      api: (path, options) => onshapeFetch(req, path, options),
+      ctx,
+      reference,
+      body,
+      box,
+      name,
+      partNumber,
+      qty,
+      material,
+      exportJson: async (drawingEid) => JSON.parse(String(await runTranslation(req,
+        `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
+        { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' }, ctx.documentId, 'drawing data'))),
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Make drawing failed:', err);
+    if (err.status === 403) {
+      return res.status(403).json({
+        error: 'The app can\'t edit Onshape yet. In the Onshape developer portal, give the app "write to your documents" permission, then click Reconnect to Onshape.',
+        needsWrite: true,
+      });
+    }
+    res.status(502).json({ error: err.status === 401 ? onshapeErrorMessage(err) : err.status ? `Onshape couldn't make the drawing (${err.status}): ${String(err.message).split(': ').slice(1).join(': ').slice(0, 200)}` : err.message });
   }
 });
 
