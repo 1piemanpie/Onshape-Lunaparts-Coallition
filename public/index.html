@@ -753,8 +753,15 @@
       folds[key] = fold;
       return fold;
     };
-    const section = (part) => (isUploaded(part) ? 'uploaded' : (part.group === 'hardware' ? 'hardware' : 'main'));
+    // Block CAD: bodies that came in through a Derive and have no team part
+    // number, i.e. the robot's block model the real parts were built on.
+    const section = (part) => {
+      if (isUploaded(part)) return 'uploaded';
+      if (part.group === 'hardware' || part.group === 'block') return part.group;
+      return 'main';
+    };
     foldFor('uploaded', 'ALREADY IN LUNA PARTS', state.parts.filter((p) => section(p) === 'uploaded'));
+    foldFor('block', 'BLOCK CAD (DERIVED)', state.parts.filter((p) => section(p) === 'block'));
     foldFor('hardware', 'HARDWARE', state.parts.filter((p) => section(p) === 'hardware'));
     for (const part of state.parts) {
       const row = document.createElement('label');
@@ -805,6 +812,7 @@
       (folds[section(part)] || list).appendChild(row);
     }
     if (folds.uploaded) list.appendChild(folds.uploaded);
+    if (folds.block) list.appendChild(folds.block);
     if (folds.hardware) list.appendChild(folds.hardware);
     updateListFooter();
   }
@@ -1506,7 +1514,7 @@
     const option = toolSelect.selectedOptions[0];
     const machine = toolSelect.value && option ? option.textContent : '';
     if (machine) return /cnc|mill|router/i.test(machine) && !/lathe/i.test(machine);
-    return Boolean(part) && part.group !== 'stock' && part.group !== 'hardware';
+    return Boolean(part) && !['stock', 'hardware', 'block'].includes(part.group);
   }
 
   // Says up front what Upload will attach, so a missing drawing is obvious
@@ -1639,8 +1647,10 @@
   el('useSelBtn').addEventListener('click', useSelection);
   el('refreshBtn').addEventListener('click', () => loadParts(true));
   el('allBtn').addEventListener('click', () => {
-    // ALL leaves hardware and parts already in LUNA alone.
-    for (const p of state.parts) if (p.group !== 'hardware' && !isUploaded(p)) state.checked.add(p.partId);
+    // ALL leaves hardware, block CAD and parts already in LUNA alone.
+    for (const p of state.parts) {
+      if (p.group !== 'hardware' && p.group !== 'block' && !isUploaded(p)) state.checked.add(p.partId);
+    }
     renderPartList();
   });
   el('clearBtn').addEventListener('click', () => {

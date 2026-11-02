@@ -169,6 +169,62 @@ const OWNER_BODY_SCRIPT = `function(context is Context, queries) {
   return transientQueriesToStrings(evaluateQuery(context, qOwnerBody(queries.id)));
 }`;
 
+// Teams start a Part Studio by Deriving the whole robot's block CAD and
+// modelling real parts on top. Those derived bodies aren't parts to make, so
+// the panel folds them away. Onshape's feature list says which features are
+// Derived, and FeatureScript's qCreatedBy says which bodies they made.
+const FEATURE_ID = /^[A-Za-z0-9_]{1,64}$/;
+function derivedBodiesScript(featureIds) {
+  const ids = featureIds.map((id) => `"${id}"`).join(', ');
+  return `function(context is Context, queries) {
+  var found = [];
+  for (var id in [${ids}]) {
+    found = append(found, qCreatedBy(makeId(id), EntityType.BODY));
+  }
+  return transientQueriesToStrings(evaluateQuery(context, qUnion(found)));
+}`;
+}
+
+async function fetchDerivedPartIds(req, source) {
+  const src = asSource(source);
+  // FeatureScript runs on a workspace or version, not a microversion.
+  if (!/^d\/[^/]+\/[wv]\//.test(src.dwe)) return new Set();
+  const { features = [] } = await onshapeFetch(req, `/partstudios/${src.dwe}/features${sourceQuery(src)}`);
+  const ids = features
+    .filter((f) => !f.suppressed && /derived/i.test(`${f.featureType || ''}`) && FEATURE_ID.test(f.featureId || ''))
+    .map((f) => f.featureId);
+  if (!ids.length) return new Set();
+  const evaluated = await onshapeFetch(req, `/partstudios/${src.dwe}/featurescript${sourceQuery(src)}`, {
+    method: 'POST',
+    body: JSON.stringify({ script: derivedBodiesScript(ids), queries: [] }),
+  });
+  return new Set(((evaluated.result && evaluated.result.value) || []).map((v) => v.value));
+}
+
+// Never fails: if Onshape won't say, nothing is treated as block CAD.
+// Cached briefly, since evaluating a big block CAD studio can take a second.
+const derivedCache = new Map();
+function derivedPartIds(req, source) {
+  const key = sourceKey(req, asSource(source));
+  const cached = derivedCache.get(key);
+  if (cached && Date.now() - cached.at < PART_INDEX_MAX_AGE_MS) return cached.ids;
+  if (derivedCache.size > 200) derivedCache.clear();
+  const ids = fetchDerivedPartIds(req, source).catch((err) => {
+    console.error('Derived feature lookup failed:', err.message);
+    derivedCache.delete(key);
+    return new Set();
+  });
+  derivedCache.set(key, { at: Date.now(), ids });
+  return ids;
+}
+
+// A derived body that has been given a team part number (e.g. a shaft
+// Derived in from the FRC Design App) is a real part; anything else that
+// came in through Derive is block CAD.
+function withBlockCad(group, derived) {
+  return derived && group !== 'team' && group !== 'hardware' ? 'block' : group;
+}
+
 const PART_INDEX_MAX_AGE_MS = 30 * 1000;
 const partIndexes = new Map();
 
@@ -294,7 +350,7 @@ function partGroup(name, standardContent) {
   return standardContent ? 'hardware' : 'other';
 }
 
-const GROUP_ORDER = { team: 0, stock: 1, other: 2, hardware: 3 };
+const GROUP_ORDER = { team: 0, stock: 1, other: 2, block: 3, hardware: 4 };
 
 function instanceSource(ctx, inst) {
   let wvm;
@@ -373,11 +429,15 @@ async function fetchAssemblyParts(req) {
   const worker = async () => {
     for (let job = jobs.shift(); job; job = jobs.shift()) {
       try {
-        const list = await onshapeFetch(req, `/parts/${job.source.dwe}${sourceQuery(job.source)}`);
+        const [list, derived] = await Promise.all([
+          onshapeFetch(req, `/parts/${job.source.dwe}${sourceQuery(job.source)}`),
+          derivedPartIds(req, job.source),
+        ]);
         const byId = new Map(list.map((x) => [x.partId, x]));
         for (const p of job.parts) {
           const info = byId.get(p.partId);
           p.material = info && info.material ? info.material.displayName : null;
+          p.group = withBlockCad(p.group, derived.has(p.partId));
         }
       } catch (err) {
         console.error('Onshape material lookup failed:', err.message);
@@ -491,13 +551,14 @@ app.get('/api/onshape/parts', async (req, res) => {
     } else if (fresh) {
       for (const p of await onshapeFetch(req, `/parts/${dwe}`)) index.partsById.set(p.partId, p);
     }
+    const derived = await derivedPartIds(req, dwe);
     const parts = [...index.partsById.values()]
       .map((p) => ({
         partId: p.partId,
         name: p.name,
         material: p.material ? p.material.displayName : null,
         quantity: 1,
-        group: partGroup(p.name, false),
+        group: withBlockCad(partGroup(p.name, false), derived.has(p.partId)),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     res.json({ kind: 'partstudio', parts });
