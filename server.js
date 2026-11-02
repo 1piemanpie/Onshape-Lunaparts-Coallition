@@ -1318,7 +1318,7 @@ app.post('/api/luna/parts', express.json(), async (req, res) => {
   // Everyone uploads through the panel's one LUNA key, so the notes say
   // which Onshape user made the part.
   const who = await onshapeUserName(req);
-  const notes = who ? [`Uploaded by ${who} (Onshape)`] : [];
+  const notes = who ? [`Uploaded by ${who} (Onshape, via Luna Parts Bridge)`] : [];
 
   // A linked assembly part gets the tag that ties its LUNA number to it.
   const panelPartId = String(b.onshapePartId || '');
@@ -1559,5 +1559,5 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
 });
 
 app.listen(PORT, () => {
-  console.log(`Parts Tracker Bridge listening on port ${PORT}`);
+  console.log(`Luna Parts Bridge listening on port ${PORT}`);
 });
