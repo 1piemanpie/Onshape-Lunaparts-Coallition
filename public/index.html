@@ -361,7 +361,7 @@
     </div>
 
     <div class="list-head">
-      <label id="listLabel">Parts in this Part Studio</label>
+      <label id="listLabel">Parts</label>
       <span class="list-tools">
         <button id="nameBtn" class="mini" type="button" title="Number parts by clicking them in Onshape">NAME</button>
         <button id="refreshBtn" class="mini" type="button" title="Reload parts from Onshape">&#8635;</button>
@@ -736,16 +736,19 @@
   // ---- Parts checklist -----------------------------------------------------
   async function loadParts(refresh = false) {
     const started = Date.now();
+    state.partsLoaded = false;
     el('partList').innerHTML = '<p class="chip-empty">Loading parts&hellip;</p>';
     try {
       const body = await getJson(`/api/onshape/parts${refresh ? '?refresh=1' : ''}`);
       state.parts = body.parts;
+      state.partsLoaded = true;
       state.kind = body.kind || 'partstudio';
       el('listLabel').textContent = state.kind === 'assembly' ? 'Parts in this assembly' : 'Parts in this Part Studio';
       // Forget ticks for parts that no longer exist.
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
       renderPartList();
+      prefetchPictures();
       log(`${body.parts.length} parts loaded from this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'} in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
     } catch (err) {
       el('partList').innerHTML = '<p class="chip-empty">Couldn’t load parts.</p>';
@@ -756,6 +759,12 @@
   function renderPartList() {
     try { peek.reset(); } catch (err) { /* not set up yet during start-up */ }
     const list = el('partList');
+    // Something else (like the LUNA lookup) can finish first; keep saying
+    // "Loading" until the parts themselves have arrived.
+    if (!state.partsLoaded) {
+      list.innerHTML = '<p class="chip-empty">Loading parts&hellip;</p>';
+      return;
+    }
     list.innerHTML = '';
     if (!state.parts.length) {
       list.innerHTML = `<p class="chip-empty">No parts in this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'}.</p>`;
@@ -1020,7 +1029,7 @@
       const box = this.ensureBox();
       this.shown = part.partId;
       const img = box.querySelector('img');
-      img.src = `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
+      img.src = pictures.get(part.partId) || `/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`;
       img.alt = part.name;
       box.querySelector('.peek-name').textContent = lunaNumberFor(part) || part.name;
       const sub = box.querySelector('.peek-sub');
@@ -1058,7 +1067,7 @@
     hoverStart(part, row) {
       if (this.pinned) return;
       clearTimeout(this.timer);
-      this.timer = setTimeout(() => this.show(part, row), 350);
+      this.timer = setTimeout(() => this.show(part, row), pictures.has(part.partId) ? 150 : 350);
     },
     hoverEnd() {
       clearTimeout(this.timer);
@@ -1066,6 +1075,34 @@
     },
     reset() { this.pinned = null; clearTimeout(this.timer); this.hide(); },
   };
+
+  // Pictures are fetched in the background as soon as the list shows, a few
+  // at a time, so hovering a row is instant. Parts to make come first;
+  // hardware is skipped (there can be hundreds of fasteners).
+  const pictures = new Map(); // partId -> object URL
+  let prefetchRun = 0;
+  async function prefetchPictures() {
+    const run = ++prefetchRun;
+    const order = { main: 0, uploaded: 1, block: 2 };
+    const sectionOf = (p) => (isUploaded(p) ? 'uploaded' : (p.group === 'block' ? 'block' : 'main'));
+    const todo = state.parts
+      .filter((p) => p.group !== 'hardware' && !pictures.has(p.partId))
+      .sort((a, b) => order[sectionOf(a)] - order[sectionOf(b)]);
+    const worker = async () => {
+      for (let part = todo.shift(); part && run === prefetchRun; part = todo.shift()) {
+        try {
+          const res = await fetch(`/api/onshape/part-image?partId=${encodeURIComponent(part.partId)}`);
+          if (res.ok) pictures.set(part.partId, URL.createObjectURL(await res.blob()));
+          if (!part.dims) {
+            const body = await getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`);
+            part.dims = body.dims;
+            if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+          }
+        } catch (err) { /* the hover will try again */ }
+      }
+    };
+    await Promise.all([1, 2, 3].map(worker));
+  }
 
   // Clicking a part in the assembly's 3D view finds its row: opens its fold,
   // scrolls to it and lights it up, and shows its picture.

@@ -524,6 +524,7 @@ app.get('/api/onshape/part-shape', async (req, res) => {
 // identified without touching the 3D view (Onshape can't highlight a part
 // inside an assembly from an app; trying froze the feature list, PR #20).
 const partImages = new Map();
+const PART_IMAGE_MAX_AGE_MS = 15 * 60 * 1000;
 app.get('/api/onshape/part-image', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
@@ -532,11 +533,13 @@ app.get('/api/onshape/part-image', async (req, res) => {
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
-    const key = `${sourceKey(req, source)}|${sourcePartId}`;
-    let png = partImages.get(key);
+    // Shared by everyone who opens the same Part Studio, for 15 minutes.
+    const key = `${source.dwe}|${source.configuration || ''}|${sourcePartId}`;
+    const cached = partImages.get(key);
+    let png = cached && Date.now() - cached.at < PART_IMAGE_MAX_AGE_MS ? cached.png : null;
     if (!png) {
       const query = new URLSearchParams({
-        viewMatrix: 'isometric', outputHeight: '240', outputWidth: '240', pixelSize: '0', edges: 'show', useAntiAliasing: 'true',
+        viewMatrix: 'isometric', outputHeight: '200', outputWidth: '200', pixelSize: '0', edges: 'show', useAntiAliasing: 'true',
       });
       const view = await onshapeFetch(req,
         `/parts/${source.dwe}/partid/${encodeURIComponent(sourcePartId)}/shadedviews${sourceQuery(source, query)}`);
@@ -544,9 +547,9 @@ app.get('/api/onshape/part-image', async (req, res) => {
       if (!base64) return res.status(404).json({ error: 'Onshape had no picture for this part.' });
       png = Buffer.from(base64, 'base64');
       if (partImages.size > 300) partImages.clear();
-      partImages.set(key, png);
+      partImages.set(key, { png, at: Date.now() });
     }
-    res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=300').send(png);
+    res.set('Content-Type', 'image/png').set('Cache-Control', 'private, max-age=900').send(png);
   } catch (err) {
     console.error('Part image failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
