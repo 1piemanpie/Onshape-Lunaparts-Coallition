@@ -556,6 +556,117 @@ app.get('/api/onshape/part-image', async (req, res) => {
   }
 });
 
+// Twins: separate bodies with the same shape (a part copied or mirrored in
+// the Part Studio and given its own name) should share one part number.
+// Volume, surface area and the principal moments of inertia per unit mass
+// don't change when a part is moved, turned or mirrored, so equal values mean
+// the same shape. A mirror can't be told apart this way; the panel only
+// merges plates and shafts automatically and asks about everything else.
+const massCache = new Map();
+function firstNumber(v) { return Array.isArray(v) ? Number(v[0]) : Number(v); }
+
+function partMassProps(req, source) {
+  const key = sourceKey(req, asSource(source));
+  const cached = massCache.get(key);
+  if (cached && Date.now() - cached.at < 60 * 1000) return cached.props;
+  if (massCache.size > 200) massCache.clear();
+  const props = onshapeFetch(req, `/partstudios/${source.dwe}/massproperties${sourceQuery(source, new URLSearchParams({ massAsGroup: 'false' }))}`)
+    .then((body) => {
+      const out = new Map();
+      for (const [partId, b] of Object.entries(body.bodies || {})) {
+        if (partId === '-all-') continue;
+        const volume = firstNumber(b.volume);
+        const area = firstNumber(b.periphery);
+        const mass = firstNumber(b.mass);
+        const moments = (b.principalInertia || []).map(firstNumber);
+        out.set(partId, {
+          volume,
+          area,
+          moments: mass > 0 && moments.length === 3 ? moments.map((m) => m / mass).sort((x, y) => x - y) : null,
+        });
+      }
+      return out;
+    })
+    .catch((err) => {
+      massCache.delete(key);
+      throw err;
+    });
+  massCache.set(key, { at: Date.now(), props });
+  return props;
+}
+
+function sameShape(a, b) {
+  const close = (x, y, tol) => Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y), 1e-12);
+  if (!(a.volume > 0) || !close(a.volume, b.volume, 0.002) || !close(a.area, b.area, 0.002)) return false;
+  if (a.moments && b.moments) return a.moments.every((m, i) => close(m, b.moments[i], 0.01));
+  return true;
+}
+
+app.post('/api/onshape/twins', express.json(), async (req, res) => {
+  const dwe = currentDwe(req);
+  if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const ids = (Array.isArray(req.body && req.body.partIds) ? req.body.partIds : [])
+    .map(String).filter((id) => /^[\x21-\x7E]{1,128}$/.test(id)).slice(0, 500);
+
+  try {
+    const resolved = [];
+    for (const id of ids) {
+      try {
+        resolved.push({ id, ...(await resolvePart(req, id)) });
+      } catch (err) { /* gone from the list; skip */ }
+    }
+    const bySource = new Map();
+    for (const r of resolved) {
+      const key = sourceKey(req, r.source);
+      if (!bySource.has(key)) bySource.set(key, { source: r.source, parts: [] });
+      bySource.get(key).parts.push(r);
+    }
+    const fingerprints = [];
+    await Promise.all([...bySource.values()].map(async ({ source, parts }) => {
+      try {
+        const props = await partMassProps(req, source);
+        for (const r of parts) {
+          const fp = props.get(r.partId);
+          if (fp) fingerprints.push({ ...r, fp });
+        }
+      } catch (err) {
+        console.error('Mass properties failed:', err.message);
+      }
+    }));
+
+    const groups = [];
+    const used = new Set();
+    for (let i = 0; i < fingerprints.length; i += 1) {
+      if (used.has(i)) continue;
+      const group = [fingerprints[i]];
+      for (let j = i + 1; j < fingerprints.length; j += 1) {
+        if (!used.has(j) && sameShape(fingerprints[i].fp, fingerprints[j].fp)) { group.push(fingerprints[j]); used.add(j); }
+      }
+      if (group.length > 1) groups.push(group);
+    }
+
+    // Plate or shaft (merged automatically) from the first member's size.
+    const out = [];
+    for (const group of groups) {
+      let shape = 'other';
+      try {
+        const { source, partId } = group[0];
+        const box = await onshapeFetch(req,
+          `/parts/${source.dwe}/partid/${encodeURIComponent(partId)}/boundingboxes${sourceQuery(source)}`);
+        const [small, mid, long] = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
+          .map((m) => m / METERS_PER_INCH).sort((a, b) => a - b);
+        if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
+        else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
+      } catch (err) { /* treat as other: ask */ }
+      out.push({ ids: group.map((g) => g.id), shape });
+    }
+    res.json({ groups: out });
+  } catch (err) {
+    console.error('Twin check failed:', err.message);
+    res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
+  }
+});
+
 // Called when the panel opens so the first click is already fast.
 app.post('/api/onshape/warm', async (req, res) => {
   const dwe = currentDwe(req);

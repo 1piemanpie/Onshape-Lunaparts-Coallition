@@ -232,6 +232,13 @@
   }
   .tag.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .qty { font-weight: 700; color: var(--text); }
+  .twin { display: block; font-size: 11px; color: var(--text); margin-top: 1px; }
+  .twin.ask { color: var(--bad); }
+  .twin button {
+    font-family: var(--heading); font-weight: 700; font-size: 10px; letter-spacing: 0.08em; margin-left: 4px;
+    background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 4px; padding: 1px 5px; cursor: pointer;
+  }
+  .part-row.found .twin { color: #e4e4e7; }
   /* SEE: a picture of the part, since Onshape can't highlight inside an assembly. */
   .see {
     font-family: var(--heading); font-weight: 700; font-size: 10.5px; letter-spacing: 0.08em;
@@ -783,7 +790,10 @@
       const ids = new Set(state.parts.map((p) => p.partId));
       for (const id of [...state.checked]) if (!ids.has(id)) state.checked.delete(id);
       renderPartList();
+      mergeSameNamed();
+      renderPartList();
       prefetchPictures();
+      loadTwins();
       log(`${body.parts.length} parts loaded from this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'} in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
     } catch (err) {
       el('partList').innerHTML = '<p class="chip-empty">Couldn’t load parts.</p>';
@@ -856,10 +866,33 @@
         const qty = document.createElement('span');
         qty.className = 'qty';
         qty.textContent = `\u00a0\u00b7\u00a0\u00d7${part.quantity}`;
-        qty.title = `${part.quantity} copies in the assembly`;
+        qty.title = part.mergedIds ? `${part.quantity} in total, counting same-shape twins with this number` : `${part.quantity} copies in the assembly`;
         sub.appendChild(qty);
       }
       text.append(name, sub);
+      const twin = twinInfo(part);
+      if (twin) {
+        const line = document.createElement('span');
+        const others = twin.others.map((p) => p.name).join(', ');
+        if (twin.shares) {
+          line.className = 'twin';
+          line.textContent = `Same shape as ${others}: gets the same number`;
+        } else {
+          line.className = 'twin ask';
+          line.textContent = `Same shape as ${others} (or a mirror). Same part?`;
+          const yes = document.createElement('button');
+          yes.type = 'button';
+          yes.textContent = 'SAME PART';
+          yes.title = 'Give these the same part number';
+          yes.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            confirmTwins(twin.group);
+          });
+          line.appendChild(yes);
+        }
+        text.appendChild(line);
+      }
 
       const tag = document.createElement('span');
       tag.className = 'tag';
@@ -1174,6 +1207,102 @@
     }
   }
 
+  // ---- Twins: different bodies with the same shape ----------------------
+  // The server compares volume, surface area and inertia. Flat plates and
+  // shafts that match share a number automatically (a mirrored plate is the
+  // same plate flipped). Anything else, like printed parts that may be left
+  // and right handed, waits for a SAME PART tap, remembered per document.
+  const PRINTED = /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|asa\b|abs\b|resin|print/i;
+  const TEAM_NAME = /^(\d{2}[a-z]{1,3}-[a-z]{1,4}\d{1,4}|\d{2}-[a-z]{1,4}-\d{1,4}|[a-z]{1,3}-?\d{1,4})\b/i;
+  state.twinGroups = [];
+  function twinsKey() { return state.context ? `lunaTwins:${state.context.documentId}` : 'lunaTwins'; }
+  function confirmedTwins() {
+    try { return new Set(JSON.parse(localStorage.getItem(twinsKey()) || '[]')); } catch (err) { return new Set(); }
+  }
+  function groupKey(ids) { return [...ids].sort().join('+'); }
+  function twinInfo(part) {
+    const ids = [part.partId, ...(part.mergedIds || [])];
+    const group = state.twinGroups.find((g) => g.ids.some((id) => ids.includes(id)));
+    if (!group) return null;
+    const others = state.parts.filter((p) => p !== part && group.ids.some((id) => id === p.partId || (p.mergedIds || []).includes(id)));
+    if (!others.length) return null; // all merged into this row already
+    return { group, others, shares: group.shares };
+  }
+  // The name a part should get if a sharing twin is already numbered.
+  function twinNumber(partId, series) {
+    const group = state.twinGroups.find((g) => g.shares && g.ids.includes(partId));
+    if (!group) return null;
+    const named = state.parts.find((p) => p.partId !== partId
+      && [p.partId, ...(p.mergedIds || [])].some((id) => group.ids.includes(id)) && series.test(p.name));
+    return named ? named.name : null;
+  }
+  // How many new numbers naming these parts uses: a twin of a part that is
+  // already numbered (or of one earlier in the list) reuses that number.
+  function newNumbersFor(partIds, series) {
+    const used = new Set();
+    let count = 0;
+    for (const partId of partIds) {
+      const group = partId && state.twinGroups.find((g) => g.shares && g.ids.includes(partId));
+      if (group && (used.has(group) || twinNumber(partId, series))) continue;
+      if (group) used.add(group);
+      count += 1;
+    }
+    return count;
+  }
+  function confirmTwins(group) {
+    const confirmed = confirmedTwins();
+    confirmed.add(groupKey(group.ids));
+    try { localStorage.setItem(twinsKey(), JSON.stringify([...confirmed])); } catch (err) { /* storage blocked */ }
+    group.shares = true;
+    log(`Marked as the same part: ${state.parts.filter((p) => group.ids.includes(p.partId)).map((p) => p.name).join(', ')}.`, 'success');
+    renderPartList();
+    if (namer.active) namer.render();
+  }
+  async function loadTwins() {
+    const candidates = state.parts.filter((p) => !p.linked && p.group !== 'hardware' && p.group !== 'block');
+    if (candidates.length < 2) return;
+    try {
+      const body = await getJson('/api/onshape/twins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partIds: candidates.flatMap((p) => [p.partId, ...(p.mergedIds || [])]) }),
+      });
+      const confirmed = confirmedTwins();
+      state.twinGroups = body.groups.map((g) => {
+        const members = state.parts.filter((p) => g.ids.includes(p.partId));
+        const printed = members.some((p) => PRINTED.test(p.material || ''));
+        return { ids: g.ids, shape: g.shape, shares: (!printed && (g.shape === 'plate' || g.shape === 'shaft')) || confirmed.has(groupKey(g.ids)) };
+      });
+      if (state.twinGroups.length) {
+        log(`Found ${state.twinGroups.length} set${state.twinGroups.length === 1 ? '' : 's'} of same-shape parts.`);
+        if (state.screen === 'list') renderPartList();
+        if (namer.active) namer.render();
+      }
+    } catch (err) {
+      log(`Couldn't check for same-shape parts: ${err.message}`, 'error');
+    }
+  }
+  // Rows with the same team number are one part in LUNA: show them as one
+  // row with the quantities added up.
+  function mergeSameNamed() {
+    const byName = new Map();
+    const keep = [];
+    for (const part of state.parts) {
+      const key = String(part.name || '').trim().toUpperCase();
+      const first = !part.linked && TEAM_NAME.test(key) ? byName.get(key) : null;
+      if (!first) {
+        if (!part.linked && TEAM_NAME.test(key)) byName.set(key, part);
+        keep.push(part);
+        continue;
+      }
+      first.mergedIds = [...(first.mergedIds || []), part.partId, ...(part.mergedIds || [])];
+      first.quantity = (first.quantity || 1) + (part.quantity || 1);
+      first.occurrences = [...(first.occurrences || []), ...(part.occurrences || [])];
+      if (state.checked.has(part.partId)) { state.checked.delete(part.partId); state.checked.add(first.partId); }
+    }
+    state.parts = keep;
+  }
+
   function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
@@ -1206,16 +1335,19 @@
       if (this.finishing) return;
       const todo = this.todo();
       const n = todo.length;
+      const fresh = newNumbersFor(todo.map((item) => item.partId), this.series());
       el('namerDone').textContent = n ? `NAME ${n} & DONE` : 'DONE';
       if (n && this.next) {
-        const last = this.format(this.next + n - 1);
+        const last = this.format(this.next + Math.max(fresh, 1) - 1);
         const how = this.pendingSource === 'ticked' ? 'ticked in the list' : 'selected in Onshape';
         const order = this.pendingSource === 'ticked' ? 'in list order' : 'in the order you selected them';
         const notes = [
           this.skippedLinked ? `${this.skippedLinked} linked FRC Design App part${this.skippedLinked === 1 ? '' : 's'} left out (they get their number on the upload card)` : '',
           this.pending.length > n ? `${this.pending.length - n} already numbered ${this.prefix()}… and left as they are` : '',
+          n > fresh ? `${n - fresh} same-shape twin${n - fresh === 1 ? '' : 's'} share${n - fresh === 1 ? 's' : ''} a number with ${n - fresh === 1 ? 'its' : 'their'} match` : '',
         ].filter(Boolean);
-        this.message(`${n} part${n === 1 ? ' is' : 's are'} ${how}. Press NAME ${n} & DONE to number ${n === 1 ? 'it' : 'them'} ${this.format(this.next)}${n > 1 ? ` to ${last}, ${order}` : ''}.${notes.length ? ` (${notes.join('; ')}.)` : ''}`);
+        const range = fresh > 1 ? ` to ${last}, ${order}` : '';
+        this.message(`${n} part${n === 1 ? ' is' : 's are'} ${how}. Press NAME ${n} & DONE to number ${n === 1 ? 'it' : 'them'} ${fresh ? this.format(this.next) : 'with their twins\u2019 numbers'}${fresh ? range : ''}.${notes.length ? ` (${notes.join('; ')}.)` : ''}`);
       } else if (!n && this.pending.length && this.next) {
         this.message(`The ${this.pendingSource === 'ticked' ? 'ticked' : 'selected'} parts already have ${this.prefix()} numbers. Click parts in Onshape (or tap them below) to number more.`);
       }
@@ -1223,7 +1355,7 @@
     // Pending parts that still need a number in the current series (a part
     // already called e.g. 26O-E001 isn't renumbered when the prefix is 26O-E).
     todo() {
-      const series = new RegExp(`^${escapeRegExp(this.prefix())}\\d+\\b`, 'i');
+      const series = this.series();
       return this.pending.filter((item) => {
         if (!item.partId) return true;
         const part = state.parts.find((p) => p.partId === item.partId);
@@ -1337,11 +1469,13 @@
       if (!this.active || !this.next) return;
       const part = state.parts.find((p) => p.partId === partId);
       if (!part || this.named.some((n) => n.partId === partId)) return;
-      const newName = this.format(this.next);
       if (part.linked) {
         this.linkedMessage(part);
         return;
       }
+      const shared = twinNumber(partId, this.series());
+      if (shared) { await this.rename(part.partId, shared, part.name, { keepNext: true }); return; }
+      const newName = this.format(this.next);
       if (part.name === newName) { this.next += 1; this.render(); return; }
       await this.rename(part.partId, newName, part.name);
     },
@@ -1358,11 +1492,14 @@
         return;
       }
       if (this.named.some((n) => n.partId === part.partId)) return; // another face of a part already named
+      const shared = twinNumber(part.partId, this.series());
+      if (shared) { await this.rename(part.partId, shared, part.name, { keepNext: true }); return; }
       const newName = this.format(this.next);
       if (part.name === newName) { this.next += 1; this.render(); return; }
       await this.rename(part.partId, newName, part.name);
     },
-    async rename(partId, newName, oldName, { undo = false } = {}) {
+    series() { return new RegExp(`^${escapeRegExp(this.prefix())}\\d+\\b`, 'i'); },
+    async rename(partId, newName, oldName, { undo = false, keepNext = false } = {}) {
       try {
         await getJson('/api/onshape/rename', {
           method: 'POST',
@@ -1389,17 +1526,30 @@
         return false;
       }
       const listed = state.parts.find((p) => p.partId === partId);
+      // A row can stand for several same-shape parts: rename them all.
+      for (const id of (listed && listed.mergedIds) || []) {
+        try {
+          await getJson('/api/onshape/rename', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partId: id, name: newName }),
+          });
+        } catch (err) {
+          log(`Couldn't rename a twin of ${oldName}: ${err.message}`, 'error');
+        }
+      }
       if (listed) listed.name = newName;
       if (undo) {
-        this.next -= 1;
+        if (!keepNext) this.next -= 1;
         this.message(`Put back ${newName}.`);
       } else {
-        this.named.push({ partId, oldName, newName });
-        this.next += 1;
-        this.message(`${oldName} \u2192 ${newName}`);
+        this.named.push({ partId, oldName, newName, keepNext });
+        if (!keepNext) this.next += 1;
+        this.message(`${oldName} \u2192 ${newName}${keepNext ? ' (same shape as a part already numbered)' : ''}`);
         showToast(`\u2713 Named ${newName}`);
       }
       this.render();
+      if (!undo) mergeSameNamed();
       renderPartList();
       return true;
     },
@@ -1407,7 +1557,7 @@
       const last = this.named.pop();
       if (!last) return;
       this.render();
-      const ok = await this.rename(last.partId, last.oldName, last.newName, { undo: true });
+      const ok = await this.rename(last.partId, last.oldName, last.newName, { undo: true, keepNext: last.keepNext });
       if (!ok) this.named.push(last);
       this.render();
     },
