@@ -214,7 +214,7 @@ function viewSetup(info) {
 
 // Picks the biggest scale that fits, and where each view's centre goes.
 // Sizes are in inches on the sheet.
-function planDrawing(info, { qty = 1, material = '', partNumber = '' } = {}) {
+function planDrawing(info, { qty = 1, material = '', partNumber = '', smallerThan = null } = {}) {
   const W = info.ext[info.horizontal];
   const H = info.ext[info.vertical];
   const D = info.ext[3 - info.horizontal - info.vertical];
@@ -223,9 +223,10 @@ function planDrawing(info, { qty = 1, material = '', partNumber = '' } = {}) {
   const roomW = SHEET.right - SHEET.left;
   const roomH = SHEET.top - SHEET.bottom;
   let views = null;
-  let scale = SCALES[SCALES.length - 1];
+  let scale = (smallerThan && SCALES.find((sc) => sc[0] / sc[1] < smallerThan[0] / smallerThan[1])) || SCALES[SCALES.length - 1];
 
   for (const sc of SCALES) {
+    if (smallerThan && sc[0] / sc[1] >= smallerThan[0] / smallerThan[1]) continue;
     const s = sc[0] / sc[1];
     let fits = false;
     if (info.type === 'plate') {
@@ -437,105 +438,330 @@ function overallDims(pts, viewId, { width = true, height = true, below = 0.45, l
   return out;
 }
 
+// Round edges in a view, one entry per circle. A hole can come back as one
+// full circle or as two half arcs, so arcs with the same centre and radius
+// are grouped into one entry (edges lists them all).
 function circlesOf(edges, m) {
-  return (edges || [])
-    .filter((e) => e && e.visible !== false && String(e.type || '').toLowerCase() === 'circle' && e.data && e.data.center)
-    .map((e) => ({ e, c: toPaper(m, e.data.center), dIn: (2 * e.data.radius) / IN }));
+  const out = [];
+  for (const e of edges || []) {
+    const t = String((e && e.type) || '').toLowerCase();
+    if (!e || e.visible === false || !e.data || !e.data.center || (t !== 'circle' && t !== 'circulararc')) continue;
+    const c = toPaper(m, e.data.center);
+    const same = out.find((o) => Math.abs(o.e.data.radius - e.data.radius) < 1e-7 && Math.hypot(o.c[0] - c[0], o.c[1] - c[1]) < 1e-4);
+    if (same) { same.edges.push(e); if (t === 'circle') same.e = e; continue; }
+    out.push({ e, edges: [e], c, dIn: (2 * e.data.radius) / IN });
+  }
+  // Only whole (or nearly whole) holes: two halves, or a full circle.
+  return out.filter((o) => o.edges.some((e) => String(e.type).toLowerCase() === 'circle') || o.edges.length >= 2);
+}
+
+// ---- overlap checks ------------------------------------------------------
+// Everything placed on the sheet is tracked here in sheet inches: the part's
+// edges, dimension lines and text, note boxes and leaders. A label is only
+// put where its box and leader stay clear of everything already there, the
+// same rules the PDF prototype used:
+//   - text never sits on a line or on other text
+//   - leaders don't cross other leaders or run through text
+//   - a leader crosses as few of the part's edges as it can (1 = just the
+//     outline; a short hop over a pocket edge is allowed when there's no
+//     cleaner spot)
+//   - nothing runs into the notes, the title block or off the sheet
+const TITLE = { x0: 4.35, y0: 0.35, x1: 10.65, y1: 2.05 };
+const CHAR_W = 0.095;  // sheet inches per character at 0.12" text
+const TEXT_H = 0.12;
+const NBSP = ' ';  // so Onshape doesn't wrap "14x Ø.200" onto two lines
+const keepWhole = (s) => String(s).replace(/ /g, NBSP);
+
+function segCross(a, b, c, d) {
+  const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+}
+function boxesHit(a, b, pad = 0) {
+  return !(a.x1 + pad < b.x0 || b.x1 + pad < a.x0 || a.y1 + pad < b.y0 || b.y1 + pad < a.y0);
+}
+// Does segment p-q touch box b (grown by pad)? Liang-Barsky clipping.
+function segHitsBox(p, q, b, pad = 0) {
+  const x0 = b.x0 - pad; const y0 = b.y0 - pad; const x1 = b.x1 + pad; const y1 = b.y1 + pad;
+  const dx = q[0] - p[0]; const dy = q[1] - p[1];
+  let t0 = 0; let t1 = 1;
+  for (const [pp, qq] of [[-dx, p[0] - x0], [dx, x1 - p[0]], [-dy, p[1] - y0], [dy, y1 - p[1]]]) {
+    if (pp === 0) { if (qq < 0) return false; continue; }
+    const t = qq / pp;
+    if (pp < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; }
+  }
+  return true;
+}
+
+// The part's visible edges in one view as straight segments on the sheet.
+function viewSegments(edges, m) {
+  const segs = [];
+  for (const e of edges || []) {
+    if (!e || e.visible === false || !e.data || e.isCenterline) continue;
+    const t = String(e.type || '').toLowerCase();
+    const id = e.uniqueId;
+    if (t === 'line') segs.push({ a: toPaper(m, e.data.start), b: toPaper(m, e.data.end), id });
+    else if ((t === 'circle' || t === 'circulararc') && e.data.center) {
+      const c = e.data.center; const r = e.data.radius;
+      let pts = [];
+      for (let k = 0; k <= 24; k += 1) {
+        const ang = (k / 24) * 2 * Math.PI;
+        const v = [c[0] + r * Math.cos(ang), c[1] + r * Math.sin(ang), c[2]];
+        if (t === 'circle' || onArc(e.data, v)) pts.push(toPaper(m, v)); else if (pts.length) { addPolyline(segs, pts, id); pts = []; }
+      }
+      addPolyline(segs, pts, id);
+    } else {
+      const pts = (e.data.points || []).map((p) => toPaper(m, p));
+      if (pts.length < 2 && e.data.start && e.data.end) pts.push(toPaper(m, e.data.start), toPaper(m, e.data.end));
+      addPolyline(segs, pts, id);
+    }
+  }
+  return segs;
+}
+function addPolyline(segs, pts, id) {
+  for (let i = 1; i < pts.length; i += 1) segs.push({ a: pts[i - 1], b: pts[i], id });
+}
+
+class Layout {
+  constructor(noteBox) {
+    this.edges = [];       // part edges (all views)
+    this.lines = [];       // dimension and leader lines
+    this.boxes = [];       // text boxes (labels, dim text, notes)
+    this.viewBoxes = {};
+    this.issues = [];
+    this.keepOut = [TITLE, noteBox];
+  }
+  addView(key, segs) {
+    this.edges.push(...segs.map((s) => ({ ...s, view: key })));
+    if (segs.length) {
+      const xs = segs.flatMap((s) => [s.a[0], s.b[0]]); const ys = segs.flatMap((s) => [s.a[1], s.b[1]]);
+      this.viewBoxes[key] = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+    }
+  }
+  // Space a dimension takes: its line, its extension lines, and its text.
+  addDim(a, b, textAt, horizontal, text) {
+    const w = CHAR_W * text.length + 0.1;
+    const tb = { x0: textAt[0] - w / 2, y0: textAt[1] - 0.09, x1: textAt[0] + w / 2, y1: textAt[1] + 0.09 };
+    if (horizontal) {
+      this.lines.push({ a: [a[0], textAt[1]], b: [b[0], textAt[1]] }, { a: [a[0], a[1]], b: [a[0], textAt[1]] }, { a: [b[0], b[1]], b: [b[0], textAt[1]] });
+    } else {
+      this.lines.push({ a: [textAt[0], a[1]], b: [textAt[0], b[1]] }, { a: [a[0], a[1]], b: [textAt[0], a[1]] }, { a: [b[0], b[1]], b: [textAt[0], b[1]] });
+    }
+    this.boxes.push(tb);
+  }
+  inSheet(b) { return b.x0 >= SHEET.left - 0.2 && b.x1 <= SHEET.right + 0.2 && b.y0 >= 0.6 && b.y1 <= 7.9; }
+  // Can a label box go here, with a leader from tail to tip (sheet coords)?
+  // Returns how many part edges the leader crosses, or -1 if it can't.
+  fits(b, tail, tip, ownId) {
+    if (!this.inSheet(b)) return -1;
+    if (this.keepOut.some((k) => k && boxesHit(b, k, 0.05))) return -1;
+    if (this.boxes.some((k) => boxesHit(b, k, 0.06))) return -1;
+    if (this.edges.some((s) => segHitsBox(s.a, s.b, b, 0.05))) return -1;
+    if (this.lines.some((s) => segHitsBox(s.a, s.b, b, 0.03))) return -1;
+    if (tail) {
+      if (this.lines.some((s) => segCross(tail, tip, s.a, s.b))) return -1;
+      if (this.boxes.some((k) => segHitsBox(tail, tip, k, 0.02))) return -1;
+      return this.edges.filter((s) => s.id !== ownId && segCross(tail, tip, s.a, s.b)).length;
+    }
+    return 0;
+  }
+  addLabel(b, tail, tip) {
+    this.boxes.push(b);
+    if (tail) this.lines.push({ a: tail, b: tip });
+  }
+}
+
+// Is a sheet point on the part's material in a view (inside an odd number of
+// outlines)? Used to keep labels in open gaps, never on the part.
+function onMaterial(pt, segs) {
+  const far = [pt[0] + 50, pt[1] + 0.000123];
+  return segs.filter((s) => segCross(pt, far, s.a, s.b)).length % 2 === 1;
+}
+
+// Finds a clean spot for a leader note pointing at one of `targets` (circles
+// with sheet centre c and edge e). Tries spots above, below, left and right
+// of the view, then in open gaps inside it, nearest first.
+function placeLeaderNote(layout, viewKey, viewId, targets, label, m) {
+  const vb = layout.viewBoxes[viewKey];
+  if (!vb) return null;
+  const viewSegs = layout.edges.filter((s) => s.view === viewKey);
+  const w = CHAR_W * label.length + 0.12;
+  const scale = Math.hypot(m[0], m[4]) || 1;  // sheet inches per view unit
+  let best = null;
+  for (const t of targets.slice(0, 12)) {
+    const [hx, hy] = t.c;
+    const rr = t.e.data.radius * scale;
+    for (const off of [0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.2, -0.3, -0.6, -0.9, -1.2]) {
+      for (const dx of [0, 0.6, -0.6, 1.2, -1.2, 2.0, -2.0]) {
+        for (const side of ['T', 'B', 'R', 'L', 'N', 'S']) {
+          if ((side === 'L' || side === 'R') && dx) continue;
+          let tx; let ty;
+          if (side === 'T') { tx = hx + 0.3 + dx; ty = vb.y1 + 0.35 + Math.max(off, 0); }
+          else if (side === 'B') { tx = hx + 0.3 + dx; ty = vb.y0 - 0.35 - Math.max(off, 0); }
+          else if (side === 'R') { tx = vb.x1 + 0.35; ty = hy + 0.35 + off; }
+          else if (side === 'L') { tx = vb.x0 - 0.35; ty = hy + 0.35 + off; }
+          else if (side === 'N') { tx = hx + 0.3 + dx / 2; ty = hy + 0.6 + Math.abs(off); }
+          else { tx = hx + 0.3 + dx / 2; ty = hy - 0.6 - Math.abs(off); }
+          const left = side === 'L';
+          const b = left ? { x0: tx - w, y0: ty - 0.1, x1: tx, y1: ty + 0.1 } : { x0: tx, y0: ty - 0.1, x1: tx + w, y1: ty + 0.1 };
+          if (side === 'N' || side === 'S') {
+            if (onMaterial([(b.x0 + b.x1) / 2, ty], viewSegs)) continue;
+          } else if (boxesHit(b, vb, 0.05)) continue;
+          const L = Math.hypot(tx - hx, ty - hy) || 1;
+          const tip = [hx + ((tx - hx) / L) * rr, hy + ((ty - hy) / L) * rr];
+          const crossings = layout.fits(b, [tx, ty], tip, t.e.uniqueId);
+          if (crossings < 0 || crossings > 7) continue;
+          const cost = L + (crossings > 1 ? 3 * (crossings - 1) : 0);
+          if (!best || cost < best.cost) best = { cost, b, tx, ty, tip, t, left, L };
+        }
+      }
+    }
+    if (best && best.cost < 3) break;
+  }
+  if (!best) return null;
+  layout.addLabel(best.b, [best.tx, best.ty], best.tip);
+  // The leader lands on the circle on the side facing the label.
+  const inv = invDir(m, [(best.tx - best.t.c[0]) / best.L, (best.ty - best.t.c[1]) / best.L]);
+  const c0 = best.t.e.data.center; const r0 = best.t.e.data.radius;
+  const landing = [c0[0] + inv[0] * r0, c0[1] + inv[1] * r0, c0[2]];
+  const e = (best.t.edges || [best.t.e]).find((x) => String(x.type).toLowerCase() === 'circle' || onArc(x.data, landing)) || best.t.e;
+  const c = e.data.center; const r = e.data.radius;
+  const pos = best.left ? [best.b.x0, best.ty] : [best.b.x0, best.ty];
+  return note(label, pos, TEXT_H, {
+    type: 'Onshape::Reference::Point', coordinate: [c[0] + inv[0] * r, c[1] + inv[1] * r, c[2]],
+    uniqueId: e.uniqueId, ...(e.deterministicId ? { deterministicId: e.deterministicId } : {}),
+    viewId, snapPointType: 'ModeNear',
+  });
+}
+
+// A sheet direction turned back into the view's own x/y directions.
+function invDir(m, d) {
+  const v = [m[0] * d[0] + m[4] * d[1], m[1] * d[0] + m[5] * d[1]];
+  const l = Math.hypot(v[0], v[1]) || 1;
+  return [v[0] / l, v[1] / l];
 }
 
 function annotationsFor(plan, views, geometry) {
   const out = [];
   const warnings = [];
-  // Notes in the top-left corner, one line each.
-  plan.notes.forEach((text, i) => out.push(note(text, [0.75, 7.75 - i * 0.2], 0.12)));
+  // Notes in the top-left corner, one line each, never wrapped.
+  const noteLines = plan.notes.length;
+  const noteW = Math.max(...plan.notes.map((t) => t.length)) * CHAR_W + 0.2;
+  const noteBox = { x0: 0.6, y0: 7.75 - (noteLines - 1) * 0.25 - 0.15, x1: 0.75 + noteW, y1: 7.95 };
+  plan.notes.forEach((text, i) => out.push(note(keepWhole(text), [0.75, 7.75 - i * 0.25], TEXT_H)));
+  const layout = new Layout(noteBox);
+  for (const [key, v] of Object.entries(views)) layout.addView(key, viewSegments(geometry[key], v.matrix));
+
+  // Views overlapping each other or the notes / title block.
+  const keys = Object.keys(layout.viewBoxes);
+  keys.forEach((k, i) => {
+    const b = layout.viewBoxes[k];
+    if (boxesHit(b, TITLE, 0.05)) layout.issues.push(`the ${k} view runs into the title block`);
+    if (boxesHit(b, noteBox, 0.05)) layout.issues.push(`the ${k} view runs into the notes`);
+    for (const k2 of keys.slice(i + 1)) if (boxesHit(b, layout.viewBoxes[k2], 0.1)) layout.issues.push(`the ${k} and ${k2} views overlap`);
+  });
 
   const main = views.main;
   if (!main) return { annotations: out, warnings: ['The main view wasn\'t found, so only the notes were added.'] };
   const mainPts = snapPoints(geometry.main, main.matrix);
   const mb = mainPts.length ? box(mainPts) : null;
 
+  // A dimension, registered with the layout so labels keep clear of it.
+  const dim = (a, b, viewId, textAt, horizontal) => {
+    const len = horizontal ? Math.abs(b.p[0] - a.p[0]) : Math.abs(b.p[1] - a.p[1]);
+    layout.addDim(a.p, b.p, textAt, horizontal, fmt(len / 1)); // text length only matters roughly
+    out.push(p2p(a, b, viewId, textAt, horizontal));
+  };
+  const overall = (pts, viewId, { width = true, height = true, below = 0.45, leftGap = 0.45 } = {}) => {
+    if (!pts.length) return;
+    const ex = extremes(pts); const b = box(pts);
+    if (width && b.x1 - b.x0 > 0.05) dim(ex.left, ex.right, viewId, [(b.x0 + b.x1) / 2, b.y0 - below], true);
+    if (height && b.y1 - b.y0 > 0.05) dim(ex.bottom, ex.top, viewId, [b.x0 - leftGap, (b.y0 + b.y1) / 2], false);
+  };
+  // Small dimensions (a thickness, a wall) put their text beside the arrows.
+  const smallDim = (a, b, viewId, y, horizontal = true) => {
+    const right = Math.max(a.p[0], b.p[0]);
+    dim(a, b, viewId, [right + 0.25 + CHAR_W * 2.5, y], horizontal);
+  };
+  const leaderNote = (viewKey, targets, label) => {
+    const v = views[viewKey];
+    const n = placeLeaderNote(layout, viewKey, v.viewId, targets, keepWhole(label), v.matrix);
+    if (n) out.push(n); else layout.issues.push(`no clean spot for the "${label}" callout`);
+    return n;
+  };
+
   if (plan.type === 'plate') {
-    out.push(...overallDims(mainPts, main.viewId));
-    // One callout per hole size, above the view, each leader to the hole of
-    // that size nearest the top edge. Labels step up a row when they'd overlap.
-    const circles = circlesOf(geometry.main, main.matrix);
-    const used = [];
-    let row = 0;
-    const placed = [];
-    for (const h of plan.labels) {
-      const same = circles.filter((c) => Math.abs(c.dIn - h.d) < 0.0015 && !used.includes(c));
-      if (!same.length) { warnings.push(`Couldn't find the ${h.label} holes in the view to call them out.`); continue; }
-      const target = same.sort((a, b) => b.c[1] - a.c[1])[0];
-      used.push(target);
-      const width = 0.09 * h.label.length + 0.2;
-      let x = Math.min(Math.max(target.c[0] + 0.25, SHEET.left), SHEET.right - width);
-      let y = (mb ? mb.y1 : target.c[1]) + 0.4;
-      while (placed.some((p) => Math.abs(p.y - y) < 0.2 && x < p.x + p.w && p.x < x + width)) { row += 1; y += 0.25; }
-      placed.push({ x, y, w: width });
-      const r = target.e.data.radius;
-      const onCircle = [target.e.data.center[0], target.e.data.center[1] + r, target.e.data.center[2]];
-      out.push(note(h.label, [x, y], 0.12, {
-        type: 'Onshape::Reference::Point', coordinate: onCircle, uniqueId: target.e.uniqueId,
-        ...(target.e.deterministicId ? { deterministicId: target.e.deterministicId } : {}),
-        viewId: main.viewId, snapPointType: 'ModeNear',
-      }));
-    }
+    overall(mainPts, main.viewId);
     const edge = views.edge;
     if (edge) {
       const ePts = snapPoints(geometry.edge, edge.matrix);
       if (ePts.length) {
         const ex = extremes(ePts); const eb = box(ePts);
-        out.push(p2p(ex.left, ex.right, edge.viewId, [(eb.x0 + eb.x1) / 2, eb.y1 + 0.35], true));
+        smallDim(ex.left, ex.right, edge.viewId, eb.y1 + 0.3);
       }
     }
+    // One callout per hole size, beside one hole of that size.
+    const circles = circlesOf(geometry.main, main.matrix);
+    for (const h of plan.labels) {
+      const same = circles.filter((c) => Math.abs(c.dIn - h.d) < 0.0015);
+      if (!same.length) { warnings.push(`Couldn't find the ${h.label} holes in the view to call them out.`); continue; }
+      // Holes near the outside first: shortest leaders.
+      same.sort((a, b) => edgeGap(a.c, mb) - edgeGap(b.c, mb));
+      leaderNote('main', same, h.label);
+    }
   } else if (plan.type === 'tube') {
-    out.push(...overallDims(mainPts, main.viewId, { height: false }));
-    // First hole: from the left end of the tube to the nearest hole centre.
+    overall(mainPts, main.viewId, { height: false });
     const circles = circlesOf(geometry.main, main.matrix).sort((a, b) => a.c[0] - b.c[0]);
     if (circles.length && mb) {
       const ex = extremes(mainPts);
       const first = circles[0];
-      out.push(p2p(ex.left, { v: first.e.data.center, id: first.e.uniqueId, did: first.e.deterministicId, snap: 'ModeCenter', p: first.c },
-        main.viewId, [(mb.x0 + first.c[0]) / 2, mb.y1 + 0.35], true));
+      dim(ex.left, { v: first.e.data.center, id: first.e.uniqueId, did: first.e.deterministicId, snap: 'ModeCenter', p: first.c },
+        main.viewId, [Math.min((mb.x0 + first.c[0]) / 2, mb.x0 + 0.3) , mb.y1 + 0.35], true);
     }
     const end = views.end;
     if (end) {
       const ePts = snapPoints(geometry.end, end.matrix);
-      out.push(...overallDims(ePts, end.viewId, { below: 0.4, left: 0.4 }));
-      // Wall: outer left edge to the next vertical line in.
-      const verticals = ePts.filter((p) => p.snap === 'ModeStart').map((p) => p.p[0]);
+      overall(ePts, end.viewId, { below: 0.4, leftGap: 0.4 });
       const eb = ePts.length ? box(ePts) : null;
       if (eb && plan.info.wall) {
         const outerLeft = extremes(ePts).left;
         const inner = ePts.filter((p) => p.p[0] > eb.x0 + 0.01 && p.p[0] < (eb.x0 + eb.x1) / 2)
           .sort((a, b) => a.p[0] - b.p[0])[0];
-        if (inner) out.push(p2p(outerLeft, inner, end.viewId, [eb.x0 - 0.35, eb.y1 + 0.3], true));
+        if (inner) dim(outerLeft, inner, end.viewId, [eb.x1 + 0.45, eb.y1 + 0.3], true);
       }
-      if (!verticals.length) warnings.push('Couldn\'t find the tube end view edges for W, H and wall.');
+      if (!ePts.length) warnings.push('Couldn\'t find the tube end view edges for W, H and wall.');
     }
   } else if (plan.type === 'round') {
-    out.push(...overallDims(mainPts, main.viewId, { height: false }));
+    overall(mainPts, main.viewId, { height: false });
     const end = views.end;
     if (end) {
       const circles = circlesOf(geometry.end, end.matrix).sort((a, b) => b.dIn - a.dIn);
-      const eb = circles.length ? { x1: Math.max(...circles.map((c) => c.c[0] + c.dIn * plan.s / 2)) } : null;
-      circles.slice(0, 2).forEach((c, i) => {
-        const label = i === 0 ? `Ø${fmt(c.dIn)}` : holeLabel(c.dIn, 1);
-        const at = [eb.x1 + 0.3, c.c[1] + 0.5 - i * 0.3];
-        const r = c.e.data.radius;
-        out.push(note(label, at, 0.12, {
-          type: 'Onshape::Reference::Point', coordinate: [c.e.data.center[0] + r * 0.7071, c.e.data.center[1] + r * 0.7071, c.e.data.center[2]],
-          uniqueId: c.e.uniqueId, ...(c.e.deterministicId ? { deterministicId: c.e.deterministicId } : {}), viewId: end.viewId, snapPointType: 'ModeNear',
-        }));
-      });
+      circles.slice(0, 2).forEach((c, i) => leaderNote('end', [c], i === 0 ? `Ø${fmt(c.dIn)}` : holeLabel(c.dIn, 1)));
       if (!circles.length) warnings.push('Couldn\'t find the round edges in the end view for the OD and bore.');
     }
   } else {
-    out.push(...overallDims(mainPts, main.viewId));
+    overall(mainPts, main.viewId);
     const right = views.right;
-    if (right) out.push(...overallDims(snapPoints(geometry.right, right.matrix), right.viewId, { height: false }));
+    if (right) overall(snapPoints(geometry.right, right.matrix), right.viewId, { height: false });
   }
-  return { annotations: out, warnings };
+
+  // Final check over everything: dimension text on the part or on other text.
+  for (let i = 0; i < layout.boxes.length; i += 1) {
+    const b = layout.boxes[i];
+    if (layout.edges.some((s) => segHitsBox(s.a, s.b, b, 0.02))) layout.issues.push('some text sits on the part');
+    for (let j = i + 1; j < layout.boxes.length; j += 1) if (boxesHit(b, layout.boxes[j], 0.02)) layout.issues.push('two pieces of text touch');
+  }
+  const issues = [...new Set(layout.issues)];
+  if (issues.length) {
+    out.push(note(keepWhole('AUTO-DRAWING NEEDS A CHECK'), [4.2, 7.85], 0.14));
+    warnings.push(`Needs a check: ${issues.join('; ')}.`);
+  }
+  return { annotations: out, warnings, issues };
+}
+
+// How far a sheet point is from the nearest side of a box.
+function edgeGap(p, b) {
+  if (!b) return 0;
+  return Math.min(p[0] - b.x0, b.x1 - p[0], p[1] - b.y0, b.y1 - p[1]);
 }
 
 // ---- Onshape calls -------------------------------------------------------
@@ -636,9 +862,34 @@ async function viewGeometry(api, ctx, eid, viewId) {
 }
 
 // The whole job. Returns { drawingId, name, plan, warnings }.
+// The views sit at fixed spots for a scale; this moves and rescales them for
+// a new plan (used when the first layout doesn't pass the overlap check).
+function editViewRequests(plan, logicalIds) {
+  const out = [];
+  plan.views.forEach((v, i) => {
+    const id = logicalIds[i];
+    if (!id) return;
+    const edit = { logicalId: id, position: { x: round4(v.x), y: round4(v.y) } };
+    if (v.key === 'main') edit.scale = { scaleSource: 'Custom', numerator: plan.scale[0], denumerator: plan.scale[1] };
+    else if (v.scale) edit.scale = v.scale;
+    out.push(edit);
+  });
+  return out;
+}
+
+async function readLayout(api, ctx, eid, plan, createdIds, exportJson) {
+  const views = matchViews(plan, await readViews(api, ctx, eid, () => exportJson(eid)), createdIds);
+  const geometry = {};
+  for (const [key, v] of Object.entries(views)) {
+    try { geometry[key] = await viewGeometry(api, ctx, eid, v.viewId); } catch (err) { geometry[key] = []; }
+  }
+  return { views, geometry };
+}
+
+// The whole job. Returns { drawingId, name, plan, warnings }.
 async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, qty, material, exportJson }) {
   const info = analyzePart(body, box);
-  const plan = planDrawing(info, { qty, material, partNumber });
+  let plan = planDrawing(info, { qty, material, partNumber });
   const warnings = [...info.warnings];
 
   const created = await createDrawingElement(api, ctx, name);
@@ -651,17 +902,40 @@ async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, q
   if (viewFails.length) warnings.push(`Some views weren't added: ${viewFails.join('; ')}`);
   const createdIds = (viewOut.results || []).map((r) => ({ logicalId: r.logicalId }));
 
-  let views = {};
-  try {
-    views = matchViews(plan, await readViews(api, ctx, eid, () => exportJson(eid)), createdIds);
-  } catch (err) {
-    warnings.push('Couldn\'t read the views back, so only the notes were added.');
+  // Lay out the dimensions and callouts; if something still collides, try
+  // up to two smaller scales before settling for "needs a check".
+  let result = null;
+  let best = null; // { plan, result } with the fewest problems so far
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let layout;
+    try {
+      layout = await readLayout(api, ctx, eid, plan, createdIds, exportJson);
+    } catch (err) {
+      warnings.push('Couldn\'t read the views back, so only the notes were added.');
+      layout = { views: {}, geometry: {} };
+    }
+    result = annotationsFor(plan, layout.views, layout.geometry);
+    const count = (result.issues || []).length;
+    if (!best || count < best.result.issues.length) best = { plan, result };
+    if (!count || attempt === 2) break;
+    const smaller = planDrawing(info, { qty, material, partNumber, smallerThan: plan.scale });
+    if (smaller.s >= plan.s) break;
+    try {
+      await modify(api, ctx, eid, 'Rescale views', { messageName: 'onshapeEditViews', views: editViewRequests(smaller, createdIds.map((c) => c.logicalId)) }, 'rescale the views');
+      plan = smaller;
+    } catch (err) {
+      break;
+    }
   }
-  const geometry = {};
-  for (const [key, v] of Object.entries(views)) {
-    try { geometry[key] = await viewGeometry(api, ctx, eid, v.viewId); } catch (err) { geometry[key] = []; }
+  // Smaller wasn't better: put the views back where the best layout had them.
+  if (best && best.plan !== plan) {
+    try {
+      await modify(api, ctx, eid, 'Rescale views', { messageName: 'onshapeEditViews', views: editViewRequests(best.plan, createdIds.map((c) => c.logicalId)) }, 'rescale the views');
+      plan = best.plan;
+      result = best.result;
+    } catch (err) { /* keep the current layout and its own annotations */ }
   }
-  const { annotations, warnings: annWarnings } = annotationsFor(plan, views, geometry);
+  const { annotations, warnings: annWarnings } = result;
   warnings.push(...annWarnings);
   if (annotations.length) {
     try {
@@ -672,7 +946,7 @@ async function makeDrawing({ api, ctx, reference, body, box, name, partNumber, q
       warnings.push(err.message);
     }
   }
-  return { drawingId: eid, name, plan: { type: plan.type, scale: plan.scale, orientation: plan.orientation }, warnings };
+  return { drawingId: eid, name, plan: { type: plan.type, scale: plan.scale, orientation: plan.orientation }, needsCheck: Boolean(result.issues && result.issues.length), warnings };
 }
 
 module.exports = {

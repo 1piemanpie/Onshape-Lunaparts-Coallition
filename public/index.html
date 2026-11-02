@@ -2092,7 +2092,7 @@
           quantity: part.quantity,
           material: part.material,
         });
-        if (made) job.drawingId = made.drawingId;
+        if (made) { job.drawingId = made.drawingId; job.drawingNeedsCheck = Boolean(made.needsCheck); }
       }
 
       if (!job.wantDxf && !job.drawingId && !job.wantStep) {
@@ -2105,6 +2105,7 @@
         const files = await attachFiles(created, job);
         result.outcome = 'created';
         result.detail = files.ok ? `Created with ${files.text}` : `Created, but ${files.text}`;
+        if (job.drawingNeedsCheck) result.detail += ' (the new drawing needs a check)';
         result.kind = files.ok ? 'good' : 'bad';
       }
     } catch (err) {
