@@ -69,10 +69,10 @@ function faceEdges(body, face) {
 }
 
 // Edges other than lines and circles need extra points; returns their IDs.
-function edgesNeedingPoints(body, face) {
-  return faceEdges(body, face)
-    .filter((e) => !isExact(e))
-    .map((e) => e.id);
+// extraFaceIds: pocket floors that go in the same DXF on their own layer.
+function edgesNeedingPoints(body, face, extraFaceIds = []) {
+  const faces = [face, ...extraFaceIds.map((id) => (body.faces || []).find((f) => f.id === id)).filter(Boolean)];
+  return [...new Set(faces.flatMap((f) => faceEdges(body, f)).filter((e) => !isExact(e)).map((e) => e.id))];
 }
 
 // A 2D coordinate system lying in the face, looking at it from outside, with
@@ -112,7 +112,11 @@ const degrees = (a) => ((a * 180) / Math.PI + 360) % 360;
 
 // Returns { entities, usedClicked } or throws with a user-facing message.
 // edgePoints: Map of edgeId -> [points] for edges that aren't lines/circles.
-function faceToDxf(body, faceId, edgePoints = new Map()) {
+// layers: extra faces to draw on their own layer, e.g. a pocketed plate's
+// pocket floors as [{ faceId, layer: 'POCKET_0-400IN' }] (R12 layer names
+// can't have spaces or dots). Through-cuts then go on layer THROUGH. They're drawn
+// flat onto the main face, so the CAM software can pick each layer out.
+function faceToDxf(body, faceId, edgePoints = new Map(), layers = []) {
   const { face, usedClicked } = pickFace(body, faceId);
   if (!face) {
     const seen = [...new Set((body.faces || []).map((f) => kind(f.surface).toLowerCase() || 'unknown'))];
@@ -123,8 +127,20 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
   const to2d = faceFrame(face, edges);
   const entities = [];
   const reamed = [];
+  const facesById = new Map((body.faces || []).map((f) => [f.id, f]));
+  const groups = [{ edges, layer: layers.length ? 'THROUGH' : '0', main: true }];
+  for (const l of layers) {
+    const extra = facesById.get(l.faceId);
+    if (extra && extra !== face) groups.push({ edges: faceEdges(body, extra), layer: String(l.layer || 'EXTRA') });
+  }
 
-  for (const edge of edges) {
+  for (const group of groups) for (const edge of group.edges) {
+    const before = entities.length;
+    addEdge(edge, group.main);
+    for (let k = before; k < entities.length; k += 1) entities[k].layer = group.layer;
+  }
+
+  function addEdge(edge, main) {
     const type = isExact(edge) ? kind(edge.curve) : 'OTHER';
     const g = edge.geometry || {};
     if (type === 'LINE') {
@@ -135,7 +151,7 @@ function faceToDxf(body, faceId, edgePoints = new Map()) {
       const start = to2d(g.startPoint);
       const end = to2d(g.endPoint);
       if (Math.hypot(start[0] - end[0], start[1] - end[1]) < 1e-6) {
-        const bore = reamedBore(radius * 2);
+        const bore = main ? reamedBore(radius * 2) : null;
         if (bore) reamed.push(bore);
         entities.push({ kind: 'CIRCLE', center, radius: bore ? (bore - REAM_UNDERSIZE_IN) / 2 : radius });
       } else {
@@ -184,17 +200,18 @@ function writeDxf(entities, shift) {
   pair(0, 'SECTION'); pair(2, 'ENTITIES');
 
   for (const e of entities) {
+    const layer = e.layer || '0';
     if (e.kind === 'LINE') {
-      pair(0, 'LINE'); pair(8, '0'); point(e.a, 10); point(e.b, 11);
+      pair(0, 'LINE'); pair(8, layer); point(e.a, 10); point(e.b, 11);
     } else if (e.kind === 'CIRCLE') {
-      pair(0, 'CIRCLE'); pair(8, '0'); point(e.center); pair(40, e.radius);
+      pair(0, 'CIRCLE'); pair(8, layer); point(e.center); pair(40, e.radius);
     } else if (e.kind === 'ARC') {
-      pair(0, 'ARC'); pair(8, '0'); point(e.center); pair(40, e.radius); pair(50, e.start); pair(51, e.end);
+      pair(0, 'ARC'); pair(8, layer); point(e.center); pair(40, e.radius); pair(50, e.start); pair(51, e.end);
     } else {
-      pair(0, 'POLYLINE'); pair(8, '0'); pair(66, '1');
+      pair(0, 'POLYLINE'); pair(8, layer); pair(66, '1');
       pair(10, 0); pair(20, 0); pair(30, 0); pair(70, '0');
-      for (const p of e.points) { pair(0, 'VERTEX'); pair(8, '0'); point(p); }
-      pair(0, 'SEQEND'); pair(8, '0');
+      for (const p of e.points) { pair(0, 'VERTEX'); pair(8, layer); point(p); }
+      pair(0, 'SEQEND'); pair(8, layer);
     }
   }
 
