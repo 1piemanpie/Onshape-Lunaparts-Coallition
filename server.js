@@ -1166,7 +1166,7 @@ async function fillPartProperties(req, source, partId, values) {
   const changes = [];
   for (const [propName, key] of TITLE_PROPS) {
     const value = values[key];
-    const prop = props.find((p) => p.name === propName && p.editable !== false);
+    const prop = props.find((p) => String(p.name || '').toLowerCase() === propName.toLowerCase() && p.editable !== false);
     if (!value || !prop || String(prop.value || '') === value) continue;
     // Leave a Description someone typed in Onshape alone.
     if (propName === 'Description' && prop.value) continue;
@@ -1178,6 +1178,40 @@ async function fillPartProperties(req, source, partId, values) {
     body: JSON.stringify({ jsonType: 'metadata-part', partId, properties: changes }),
   });
   return changes;
+}
+
+// The title block's drawing number box (next to the sheet size) reads the
+// drawing tab's own Part number, not the part's, so that's set too.
+async function fillDrawingNumber(req, ctx, drawingEid, number) {
+  if (!number) return;
+  const path = `/metadata/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}`;
+  const meta = await onshapeFetch(req, path);
+  const prop = (meta.properties || []).find((p) => String(p.name || '').toLowerCase() === 'part number' && p.editable !== false);
+  if (!prop) throw new Error('Onshape didn\'t list a Part number property for the drawing');
+  if (String(prop.value || '') === number) return;
+  await onshapeFetch(req, path, {
+    method: 'POST',
+    body: JSON.stringify({ properties: [{ propertyId: prop.propertyId, value: number }] }),
+  });
+}
+
+async function fillTitleBlock(req, ctx, { local, source, partId, drawingEid, partNumber, partName }) {
+  const warnings = [];
+  if (local) {
+    try {
+      await fillPartProperties(req, source, partId, { number: partNumber, name: partName });
+    } catch (err) {
+      console.error('Filling part properties failed:', err.message);
+      warnings.push(`Couldn't fill the title block's title from the part (${err.status || err.message}).`);
+    }
+  }
+  try {
+    await fillDrawingNumber(req, ctx, drawingEid, partNumber);
+  } catch (err) {
+    console.error('Filling the drawing number failed:', err.message);
+    warnings.push(`Couldn't fill the title block's drawing number (${err.status || err.message}).`);
+  }
+  return warnings;
 }
 
 // Drawings being made right now, by document + part number. If the panel
@@ -1238,15 +1272,10 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     if (existing && !b.force) {
       // The title block reads the part's properties live, so filling them
       // also fixes a drawing made before they were filled.
-      const warnings = [];
-      if (reference.elementId === eid && !reference.documentId) {
-        try {
-          await fillPartProperties(req, source, sourcePartId, { number: partNumber, name: partName });
-        } catch (err) {
-          console.error('Filling part properties failed:', err.message);
-          warnings.push(`Couldn't fill the title block's part number and title (${err.status || err.message}).`);
-        }
-      }
+      const warnings = await fillTitleBlock(req, ctx, {
+        local: reference.elementId === eid && !reference.documentId,
+        source, partId: sourcePartId, drawingEid: existing.id, partNumber, partName,
+      });
       return res.json({ drawingId: existing.id, name: existing.name, existing: true, warnings });
     }
     let n = 1;
@@ -1262,16 +1291,17 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     // Fill the title block's part number and title (parts from this document
     // only; linked parts can't be changed from here). Done after the shape
     // reads, since any edit makes the document's cached data look stale.
+    const local = reference.elementId === eid && !reference.documentId;
     const titleWarnings = [];
-    if (reference.elementId === eid && !reference.documentId) {
+    if (local) {
       try {
         await fillPartProperties(req, source, sourcePartId, { number: partNumber, name: partName });
       } catch (err) {
         console.error('Filling part properties failed:', err.message);
-        titleWarnings.push(`Couldn't fill the title block's part number and title (${err.status || err.message}).`);
+        titleWarnings.push(`Couldn't fill the title block's title from the part (${err.status || err.message}).`);
       }
     } else {
-      titleWarnings.push('This part is linked from another document, so the title block\'s part number and title stay empty. The notes at the top left have them.');
+      titleWarnings.push('This part is linked from another document, so the title block\'s title stays empty.');
     }
 
     const result = await makeDrawing({
@@ -1300,6 +1330,13 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
         list.madeAt = Date.now();
         list.stamp = 'made-here';
       }
+    }
+    // The drawing tab exists now, so its own number can be set.
+    try {
+      await fillDrawingNumber(req, ctx, result.drawingId, partNumber);
+    } catch (err) {
+      console.error('Filling the drawing number failed:', err.message);
+      titleWarnings.push(`Couldn't fill the title block's drawing number (${err.status || err.message}).`);
     }
     result.warnings = [...titleWarnings, ...(result.warnings || [])];
     finish.resolve(result);
