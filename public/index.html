@@ -431,6 +431,7 @@
       <div class="field">
         <label for="partNumberInput">Part Number</label>
         <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
+        <p id="numberWarn" class="hint left warn"></p>
       </div>
 
       <div class="field full">
@@ -1794,6 +1795,7 @@
           for (const id of DRAFT_FIELDS) if (draft.values[id] !== undefined) el(id).value = draft.values[id];
           el('stepInput').checked = Boolean(draft.step);
           updateAttachHint();
+          checkNumber();
         }
         log(`Back on part ${state.step + 1} of ${state.queue.length}.`);
         saveProgress();
@@ -2006,6 +2008,7 @@
     // In an assembly, each copy of a part counts towards the quantity.
     el('quantityInput').value = String(part.quantity || 1);
     pickDrawingFor(number);
+    checkNumber();
     updateAttachHint();
     // A part saved before opens with what was typed then.
     const saved = stagedFor(part.partId);
@@ -2027,6 +2030,7 @@
       state.toolTouched = true;
       state.thicknessTouched = true;
       updateAttachHint();
+      checkNumber();
     }
     el('nameInput').focus();
   }
@@ -2043,6 +2047,7 @@
         cardProjectSelect.value = String(auto.project.id);
         el('projectWhy').textContent = `(from ${auto.why})`;
       }
+      checkNumber();
       log(`${part.name} is linked, so Onshape keeps its name. It gets ${number} in LUNA Parts.`);
     } catch (err) {
       log(`Couldn't pick a number for ${part.name}: ${err.message}`, 'error');
@@ -2296,7 +2301,41 @@
     return part;
   }
 
+  // Team numbers look like 26O-E018: year, robot letter(s), dash, subsystem,
+  // number. A number that doesn't (like E018, from a prefix that lost its
+  // "26O-") gets a warning, and SAVE & NEXT asks to be pressed again.
+  const TEAM_NUMBER = /^\d{2}[A-Z]{1,3}-[A-Z]{1,4}\d+$/i;
+  let numberConfirmed = '';
+  function numberProblem() {
+    const number = el('partNumberInput').value.trim();
+    if (!number) return '';
+    const project = (state.projects || []).find((p) => String(p.id) === cardProjectSelect.value);
+    if (project && project.prefix && !number.toUpperCase().startsWith(String(project.prefix).toUpperCase())) {
+      return `\u26a0 ${number} doesn\u2019t start with ${project.name}\u2019s prefix ${project.prefix}. Check the name prefix.`;
+    }
+    if (!TEAM_NUMBER.test(number)) {
+      return `\u26a0 ${number} doesn\u2019t match the team format (like 26O-E018). Check the name prefix.`;
+    }
+    return '';
+  }
+  function checkNumber() {
+    const problem = numberProblem();
+    el('numberWarn').textContent = problem;
+    if (!problem && footerHint.textContent.includes('again to save it anyway')) showHint('');
+  }
+  el('partNumberInput').addEventListener('input', checkNumber);
+  cardProjectSelect.addEventListener('change', checkNumber);
+
   function saveCard() {
+    const problem = numberProblem();
+    const typed = `${currentPartId()}|${el('partNumberInput').value.trim()}|${cardProjectSelect.value}`;
+    if (problem && numberConfirmed !== typed) {
+      numberConfirmed = typed;
+      checkNumber();
+      showHint(`${problem.replace(/^\u26a0 /, '')} Press SAVE & NEXT again to save it anyway.`, 'bad');
+      el('partNumberInput').focus();
+      return;
+    }
     const part = readCard();
     if (!part) return;
     const onshapePart = currentPart();
