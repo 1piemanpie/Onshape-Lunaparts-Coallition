@@ -1236,8 +1236,8 @@
     { test: (p, m) => /srpp|polypropylene/.test(m), tools: [/router/, /cnc|mill/], why: 'SRPP is routed' },
     { test: (p, m) => /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|print/.test(m), tools: [/print|3d/], why: '3D-printed material' },
     // Auto-detect (step 4): box tube and pocketed plates.
-    { test: (p) => p.detect && p.detect.type === 'tube' && p.detect.needsDxf, tools: [/cnc|mill/, /router/], why: 'box tube with holes to mill' },
-    { test: (p) => p.detect && p.detect.type === 'tube', tools: [/saw/], why: 'pre-drilled or plain box tube, just cut to length' },
+    // Tubes start on the saw; holes to mill still get their DXF (wantsDxf).
+    { test: (p) => p.detect && p.detect.type === 'tube', tools: [/chop/, /saw/], why: 'box tube, cut to length first' },
     { test: (p) => p.detect && p.detect.type === 'plate' && p.detect.pockets, tools: [/cnc|mill/, /router/], why: 'plate with pockets' },
     { test: (p) => p.shape === 'shaft', tools: [/lathe/], why: 'long and round/hex, like a shaft' },
     { test: (p) => p.group === 'stock' || /shaft|spacer|round tube/i.test(p.name), tools: [/lathe/], why: 'shaft or spacer' },
@@ -2845,12 +2845,19 @@
   // DXFs are only for parts cut on the CNC. With no machine picked, a
   // Part Studio part still gets one (as before), but shafts and spacers don't.
   function wantsDxf(part) {
-    // Box tube: only when it has holes or cuts to mill (auto-detect).
-    if (part && part.detect && part.detect.type === 'tube' && !part.detect.needsDxf) return false;
+    // Box tube: the DXF follows auto-detect, not the Machine, because a tube
+    // starts on the saw and goes to the mill after (Micah 2026-11-03). One
+    // with nothing to mill still gets a DXF if the Machine is set to CNC by hand.
+    if (part && part.detect && part.detect.type === 'tube' && part.detect.needsDxf) return true;
+    if (tubeNothingToMill(part)) return false;
     const option = toolSelect.selectedOptions[0];
     const machine = toolSelect.value && option ? option.textContent : '';
     if (machine) return /cnc|mill|router/i.test(machine) && !/lathe/i.test(machine);
     return Boolean(part) && !['stock', 'hardware', 'block'].includes(part.group);
+  }
+
+  function tubeNothingToMill(part) {
+    return Boolean(part && part.detect && part.detect.type === 'tube' && !part.detect.needsDxf && !state.toolTouched);
   }
 
   // Auto-detect's DXF faces: one per side of a box tube with holes to mill,
@@ -2878,7 +2885,8 @@
       : face
         ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
         : 'DXF of the largest flat face';
-    const noDxf = toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
+    const noDxf = tubeNothingToMill(part) ? 'No DXF (auto-detect found nothing to mill on this tube; pick the CNC machine to get one anyway)'
+      : toolSelect.value ? 'No DXF (not a CNC part)' : 'No DXF (pick a CNC machine to get one)';
     const choice = drawingSelect.value;
     const noDraw = choice === NO_DRAWING || !canDraw(part);
     attachHint.className = 'hint left';
