@@ -1482,6 +1482,47 @@ app.get('/api/luna/part-files', async (req, res) => {
   }
 });
 
+// UPDATE FILES on a part renamed in Onshape after upload (E018 -> 26O-E018):
+// gives the LUNA part the new number too. LUNA's edit needs the required
+// fields sent back, so the part is read first.
+app.post('/api/luna/parts/:id/number', express.json(), async (req, res) => {
+  if (!req.session.onshapeTokens) return res.status(401).json({ error: 'Log in with Onshape first.' });
+  const id = optionalNumber(req.params.id, { integer: true });
+  const number = String((req.body || {}).partNumber || '').trim();
+  if (!id) return res.status(400).json({ error: 'Invalid LUNA part.' });
+  if (!number || number.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
+  const headers = { Authorization: `Bearer ${process.env.LUNA_PARTS_API_KEY}`, Accept: 'application/json' };
+  try {
+    const got = await fetch(`${LUNA_API_BASE}/parts/${id}`, { headers });
+    if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
+    const gotBody = await got.json();
+    const part = gotBody.data || gotBody;
+    const siblings = await lunaGetAll(`parts?project_id=${part.project_id}`);
+    const clash = siblings.find((p) => p.id !== part.id && p.project_id === part.project_id
+      && String(p.part_number || '').trim().toUpperCase() === number.toUpperCase());
+    if (clash) return res.status(409).json({ error: `${clash.part_number} already exists in this project ("${clash.name}"), so ${part.part_number} wasn't renamed.` });
+    const fields = { part_number: number };
+    for (const key of ['name', 'description', 'parent_part_id', 'part_status_id', 'tool_id', 'type', 'material',
+      'material_thickness_id', 'priority', 'notes', 'quantity', 'cut_length', 'lead_time_days']) {
+      if (part[key] !== null && part[key] !== undefined) fields[key] = part[key];
+    }
+    if (!fields.part_status_id && part.status && part.status.id) fields.part_status_id = part.status.id;
+    const put = await fetch(`${LUNA_API_BASE}/parts/${id}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    });
+    if (!put.ok) {
+      console.error('LUNA Parts rename failed:', put.status, await put.text());
+      return res.status(502).json({ error: `LUNA Parts didn't accept the new number (${put.status}).` });
+    }
+    res.json({ ok: true, partNumber: number });
+  } catch (err) {
+    console.error('LUNA Parts rename failed:', err);
+    res.status(502).json({ error: 'Could not reach LUNA Parts to rename the part.' });
+  }
+});
+
 // Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
 // The API mentions a project_id filter without documenting it, so we pass
 // it and also filter here in case it's ignored.
