@@ -1403,6 +1403,61 @@ app.get('/api/luna/part-numbers', async (req, res) => {
   }
 });
 
+// Read-only: parts this panel has sent to LUNA (their notes say "Uploaded
+// by <name> (Onshape..."), newest first, for the HISTORY tab. Only LUNA is
+// asked, so it costs no Onshape API calls.
+const UPLOADED_BY = /Uploaded by (.+?) \(Onshape/;
+app.get('/api/luna/history', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+  try {
+    const parts = await lunaGetAll('parts');
+    const uploads = parts
+      .map((p) => ({ p, m: String(p.notes || '').match(UPLOADED_BY) }))
+      .filter(({ m }) => m)
+      .map(({ p, m }) => ({
+        id: p.id,
+        partNumber: String(p.part_number || '').trim(),
+        name: String(p.name || ''),
+        projectId: p.project_id,
+        statusId: p.part_status_id,
+        quantity: p.quantity,
+        by: m[1].trim(),
+        createdAt: p.created_at || null,
+      }))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || b.id - a.id)
+      .slice(0, 300);
+    res.json({ uploads });
+  } catch (err) {
+    console.error('LUNA Parts history failed:', err);
+    res.status(502).json({ error: 'Could not read the upload history from LUNA Parts.' });
+  }
+});
+
+// Read-only: the files attached to one LUNA part (shown when a HISTORY row
+// is opened).
+app.get('/api/luna/parts/:id/files', async (req, res) => {
+  if (!req.session.onshapeTokens) {
+    return res.status(401).json({ error: 'Log in with Onshape first.' });
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid part.' });
+  try {
+    const files = await lunaGetAll(`parts/${id}/attachments`);
+    res.json({
+      files: files.map((f) => ({
+        name: String(f.original_filename || f.filename || 'file'),
+        size: f.human_file_size || '',
+        type: String(f.extension || '').toUpperCase(),
+      })),
+    });
+  } catch (err) {
+    console.error('LUNA Parts attachments failed:', err);
+    res.status(502).json({ error: 'Could not read this part\'s files from LUNA Parts.' });
+  }
+});
+
 // Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
 // The API mentions a project_id filter without documenting it, so we pass
 // it and also filter here in case it's ignored.

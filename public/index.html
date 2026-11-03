@@ -226,6 +226,10 @@
   .part-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .part-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .part-sub { font-size: 11px; color: var(--muted); }
+  .history-filters { display: flex; gap: 6px; margin: 8px 0; }
+  .history-filters input { flex: 1; min-width: 0; }
+  .history-filters select { max-width: 45%; }
+  .history-files { font-size: 11px; color: var(--muted); padding: 2px 0 6px 10px; }
   .part-sub.good { color: var(--good); }
   .part-sub.bad { color: var(--bad); }
   .part-list .chip-empty { display: block; padding: 10px; margin: 0; }
@@ -353,8 +357,8 @@
   </header>
 
   <nav class="tabs">
-    <button class="tab active" type="button">PARTS</button>
-    <button class="tab" type="button" disabled title="Coming soon">HISTORY</button>
+    <button id="partsTab" class="tab active" type="button">PARTS</button>
+    <button id="historyTab" class="tab" type="button">HISTORY</button>
     <span id="docInfo" class="doc"></span>
     <a class="tab-link" href="https://build.lunatecs.org" target="_blank" rel="noopener">LUNA &#8599;</a>
   </nav>
@@ -528,6 +532,20 @@
     <div id="reviewList" class="part-list"></div>
   </section>
 
+  <!-- ---- History: what this panel has sent to LUNA Parts ---- -->
+  <section id="historyScreen" hidden>
+    <div class="card-head">
+      <h2 class="card-title">Sent to LUNA Parts</h2>
+      <button id="historyRefreshBtn" class="link" type="button">&#8635; Refresh</button>
+    </div>
+    <div class="history-filters">
+      <input id="historySearch" type="search" placeholder="Search parts or people" autocomplete="off">
+      <select id="historyProject"><option value="">All projects</option></select>
+    </div>
+    <p id="historySummary" class="hint left"></p>
+    <div id="historyList" class="part-list"></div>
+  </section>
+
   <!-- ---- Screen 4: what happened ---- -->
   <section id="doneScreen" hidden>
     <h2 id="doneTitle" class="card-title">Done</h2>
@@ -555,6 +573,9 @@
   </div>
   <div id="reviewFooter" class="footer-row" hidden>
     <button id="uploadAllBtn" class="btn" type="button" disabled>&#8593; UPLOAD ALL</button>
+  </div>
+  <div id="historyFooter" class="footer-row" hidden>
+    <button id="historyBackBtn" class="btn ghost" type="button">&larr; BACK</button>
   </div>
   <div id="doneFooter" class="footer-row" hidden>
     <button id="againBtn" class="btn" type="button">BACK TO PARTS</button>
@@ -734,10 +755,12 @@
 
   // ---- Screens -------------------------------------------------------------
   function showScreen(name) {
-    for (const s of ['list', 'card', 'review', 'done']) {
+    for (const s of ['list', 'card', 'review', 'done', 'history']) {
       el(`${s}Screen`).hidden = s !== name;
       el(`${s}Footer`).hidden = s !== name;
     }
+    el('partsTab').classList.toggle('active', name !== 'history');
+    el('historyTab').classList.toggle('active', name === 'history');
     state.screen = name;
     showHint('');
     saveProgress();
@@ -1670,7 +1693,8 @@
 
   function saveProgress() {
     const key = progressKey();
-    if (!key || !progressRestored || restoringCard) return;
+    // HISTORY is only a look; the screen to come back to stays saved.
+    if (!key || !progressRestored || restoringCard || state.screen === 'history') return;
     const data = {
       savedAt: Date.now(),
       screen: state.screen,
@@ -2828,6 +2852,113 @@
     showScreen('list');
     renderPartList();
   });
+  // ---- History tab ---------------------------------------------------------
+  // Parts this panel has sent to LUNA (from LUNA itself, so it costs no
+  // Onshape API calls and shows everyone's uploads, not just this browser's).
+  const history = { uploads: null, back: 'list', loading: false };
+
+  function historyDate(value) {
+    const d = value ? new Date(value) : null;
+    if (!d || Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+
+  async function loadHistory() {
+    if (history.loading) return;
+    history.loading = true;
+    el('historySummary').textContent = 'Loading from LUNA Parts…';
+    el('historySummary').className = 'hint left';
+    try {
+      const body = await getJson('/api/luna/history');
+      history.uploads = body.uploads;
+      renderHistory();
+    } catch (err) {
+      el('historySummary').textContent = err.message;
+      el('historySummary').className = 'hint left bad';
+    } finally {
+      history.loading = false;
+    }
+  }
+
+  function renderHistory() {
+    const list = el('historyList');
+    list.innerHTML = '';
+    if (!history.uploads) return;
+    const projects = new Map((state.projects || []).map((p) => [String(p.id), p.name]));
+    const statuses = new Map([...statusSelect.options].map((o) => [o.value, o.textContent]));
+    // Project filter: only projects that have uploads.
+    const pick = el('historyProject');
+    const chosen = pick.value;
+    const ids = [...new Set(history.uploads.map((u) => String(u.projectId)))];
+    pick.innerHTML = '<option value="">All projects</option>';
+    for (const id of ids) pick.add(new Option(projects.get(id) || `Project ${id}`, id));
+    pick.value = ids.includes(chosen) ? chosen : '';
+
+    const query = el('historySearch').value.trim().toLowerCase();
+    const shown = history.uploads.filter((u) => (!pick.value || String(u.projectId) === pick.value)
+      && (!query || `${u.partNumber} ${u.name} ${u.by}`.toLowerCase().includes(query)));
+    el('historySummary').className = 'hint left';
+    el('historySummary').textContent = history.uploads.length
+      ? `${shown.length} of ${history.uploads.length} part${history.uploads.length === 1 ? '' : 's'} sent from Onshape. Tap one to see its files.`
+      : 'Nothing has been sent to LUNA Parts from this panel yet.';
+
+    for (const u of shown) {
+      const row = document.createElement('div');
+      row.className = 'part-row';
+      row.style.cursor = 'pointer';
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = [u.partNumber, u.name].filter(Boolean).join('  ');
+      const sub = document.createElement('span');
+      sub.className = 'part-sub';
+      sub.textContent = [u.by, historyDate(u.createdAt), projects.get(String(u.projectId)),
+        u.quantity > 1 ? `×${u.quantity}` : ''].filter(Boolean).join(' · ');
+      text.append(name, sub);
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = (statuses.get(String(u.statusId)) || '').split(' (')[0] || 'SENT';
+      row.append(text, tag);
+      const files = document.createElement('div');
+      files.className = 'history-files';
+      files.hidden = true;
+      row.addEventListener('click', async () => {
+        files.hidden = !files.hidden;
+        if (files.hidden || files.dataset.loaded) return;
+        files.textContent = 'Loading files…';
+        try {
+          const body = await getJson(`/api/luna/parts/${encodeURIComponent(u.id)}/files`);
+          files.dataset.loaded = '1';
+          files.textContent = body.files.length
+            ? body.files.map((f) => `${f.name}${f.size ? ` (${f.size})` : ''}`).join(' · ')
+            : 'No files attached.';
+        } catch (err) {
+          files.textContent = err.message;
+        }
+      });
+      list.append(row, files);
+    }
+  }
+
+  el('historyTab').addEventListener('click', () => {
+    if (state.screen === 'history') return;
+    history.back = state.screen || 'list';
+    showScreen('history');
+    if (history.uploads) renderHistory();
+    loadHistory();
+  });
+  const leaveHistory = () => {
+    if (state.screen !== 'history') return;
+    showScreen(history.back);
+    if (history.back === 'list') renderPartList();
+  };
+  el('partsTab').addEventListener('click', leaveHistory);
+  el('historyBackBtn').addEventListener('click', leaveHistory);
+  el('historyRefreshBtn').addEventListener('click', loadHistory);
+  el('historySearch').addEventListener('input', renderHistory);
+  el('historyProject').addEventListener('change', renderHistory);
+
   el('againBtn').addEventListener('click', () => {
     showScreen('list');
     renderPartList();
