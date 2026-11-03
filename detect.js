@@ -45,26 +45,57 @@ const SIDE_NAMES = { '0+': 'right', '0-': 'left', '1+': 'back', '1-': 'front', '
 // ---- bounding box straight from bodydetails (saves a call per part) -------
 // Lines count by their ends; circles and arcs are sampled so a round end or
 // a rounded corner still counts; other curves by their start, middle and end.
-function circleNormal(edge) {
+// Onshape may not name the circle's normal the way we expect, and a full
+// circle's start and middle points are opposite each other (no plane from
+// them). So it falls back to the faces the edge borders: a hole's wall
+// (cylinder axis) or the flat face it's cut in (plane normal).
+let edgeFaces = new WeakMap();
+function indexEdgeFaces(body) {
+  if (!body || edgeFaces.has(body)) return;
+  const map = new Map();
+  for (const f of body.faces || []) {
+    for (const loop of f.loops || []) {
+      for (const ce of loop.coedges || []) {
+        if (!map.has(ce.edgeId)) map.set(ce.edgeId, []);
+        map.get(ce.edgeId).push(f);
+      }
+    }
+  }
+  edgeFaces.set(body, map);
+}
+function circleNormal(edge, body = null) {
   const c = edge.curve || {};
-  const n = unit(vec(c.normal) || vec(c.axis) || [0, 0, 0]);
-  if (n) return n;
+  const direct = unit(vec(c.normal) || vec(c.axis) || vec(c.direction) || [0, 0, 0]);
+  if (direct) return direct;
   const g = edge.geometry || {};
   const o = vec(c.origin);
   const s = vec(g.startPoint);
   const m = vec(g.midPoint);
-  return o && s && m ? unit(cross(sub(s, o), sub(m, o))) : null;
+  const e = vec(g.endPoint);
+  for (const q of [m, e]) {
+    const n = o && s && q ? unit(cross(sub(s, o), sub(q, o))) : null;
+    if (n && len(cross(sub(s, o), sub(q, o))) > 1e-12) return n;
+  }
+  if (body) {
+    indexEdgeFaces(body);
+    for (const f of edgeFaces.get(body).get(edge.id) || []) {
+      const sf = f.surface || {};
+      if (kindOf(sf) === 'cylinder' && sf.axis) return unit(vec(sf.axis));
+      if (kindOf(sf) === 'plane' && sf.normal) return unit(vec(sf.normal));
+    }
+  }
+  return null;
 }
 
 // Angle swept by a circle edge (2*pi for a full circle), going from its start
 // through its middle point to its end.
-function arcSweep(edge) {
+function arcSweep(edge, body = null) {
   const g = edge.geometry || {};
   const o = vec(edge.curve && edge.curve.origin);
   const s = vec(g.startPoint);
   const e = vec(g.endPoint);
   const m = vec(g.midPoint);
-  const n = circleNormal(edge);
+  const n = circleNormal(edge, body);
   if (!o || !s || !e || !n) return null;
   if (len(sub(s, e)) < 1e-7) return 2 * Math.PI;
   const u = sub(s, o);
@@ -78,16 +109,16 @@ function arcSweep(edge) {
   return ang(m) < te ? te : 2 * Math.PI - te;
 }
 
-function circlePoints(edge, steps = 24) {
+function circlePoints(edge, body = null, steps = 24) {
   const o = vec(edge.curve.origin);
   const r = Number(edge.curve.radius);
-  const n = circleNormal(edge);
+  const n = circleNormal(edge, body);
   const s = vec((edge.geometry || {}).startPoint);
   if (!o || !(r > 0) || !n) return [];
   const u = unit(s ? sub(s, o) : cross(Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], n));
   if (!u) return [];
   const v = cross(n, u);
-  const sweep = arcSweep(edge) || 2 * Math.PI;
+  const sweep = arcSweep(edge, body) || 2 * Math.PI;
   const pts = [];
   for (let k = 0; k <= steps; k += 1) {
     const t = (sweep * k) / steps;
@@ -100,7 +131,7 @@ function bodyBox(body) {
   const pts = [];
   for (const edge of (body && body.edges) || []) {
     const g = edge.geometry || {};
-    if (kindOf(edge.curve) === 'circle') pts.push(...circlePoints(edge));
+    if (kindOf(edge.curve) === 'circle') pts.push(...circlePoints(edge, body));
     for (const p of [g.startPoint, g.endPoint, g.midPoint]) if (p) pts.push(vec(p));
   }
   for (const v of (body && body.vertices) || []) if (v.point) pts.push(vec(v.point));
@@ -233,7 +264,7 @@ function tubeDetails(body, info, box) {
   const groups = new Map();
   for (const edge of body.edges || []) {
     if (kindOf(edge.curve) !== 'circle') continue;
-    const n = circleNormal(edge);
+    const n = circleNormal(edge, body);
     const i = axisOf(n);
     if (i < 0 || i === a) continue; // corner radii and end features run along the length
     const o = inch(vec(edge.curve.origin));
@@ -244,7 +275,7 @@ function tubeDetails(body, info, box) {
     const key = `${side}|${round(o[a], 0.002).toFixed(3)}|${round(o[j], 0.002).toFixed(3)}|${round(d, 0.002).toFixed(3)}`;
     const g = groups.get(key) || { side, along: o[a], across: o[j], d, levels: new Map() };
     const level = round(o[i], 0.002).toFixed(3);
-    g.levels.set(level, (g.levels.get(level) || 0) + (arcSweep(edge) || 0));
+    g.levels.set(level, (g.levels.get(level) || 0) + (arcSweep(edge, body) || 0));
     groups.set(key, g);
   }
   const holes = [];
