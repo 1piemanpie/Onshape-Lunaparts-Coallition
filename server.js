@@ -499,6 +499,9 @@ async function elementType(req) {
 // The document's tabs (for the Drawing picker and MAKE DRAWING), kept until
 // the document changes.
 const elementLists = new Map();
+// After the panel makes a drawing, its saved tab list (plus that drawing) is
+// trusted for the next drawing's duplicate check for this long.
+const RECENT_DRAWING_MS = 2 * 60 * 1000;
 async function getElements(req, { maxAgeMs } = {}) {
   const ctx = req.session.onshapeContext;
   const stamp = await docVersion(req, { maxAgeMs });
@@ -1222,9 +1225,12 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     if (source.configuration) reference.configuration = source.configuration;
 
     // Don't make a second drawing when one already exists for this part.
-    // Checked fresh (one call, or none if nothing changed) so a drawing made
-    // a moment ago isn't made twice.
-    const elements = await getElements(req, { maxAgeMs: 5000 });
+    // Drawings this server just made are added to the saved tab list, so a
+    // batch doesn't re-read the whole list (2 calls) before every drawing.
+    const saved = elementLists.get(docKeyOf(ctx));
+    const elements = saved && Date.now() - saved.madeAt < RECENT_DRAWING_MS
+      ? await saved.value
+      : await getElements(req, { maxAgeMs: 5000 });
     const drawings = elements.filter((e) => e.elementType === 'DRAWING'
       || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
     const key = partNumber.split(/\s+/)[0].toUpperCase();
@@ -1283,8 +1289,18 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
         `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
         { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' }, ctx.documentId, 'drawing data'))),
     });
-    // The document now has a new tab; the next Drawing list reads it again.
-    elementLists.delete(docKeyOf(ctx));
+    // The document now has a new tab. Add it to the saved list so the next
+    // drawing in a batch can check names without asking Onshape again; the
+    // Drawing picker still re-reads the list on its next load.
+    const list = elementLists.get(docKeyOf(ctx));
+    if (list) {
+      const tabs = await list.value.catch(() => null);
+      if (tabs) {
+        tabs.push({ id: result.drawingId, name: result.name, elementType: 'DRAWING' });
+        list.madeAt = Date.now();
+        list.stamp = 'made-here';
+      }
+    }
     result.warnings = [...titleWarnings, ...(result.warnings || [])];
     finish.resolve(result);
     res.json(result);
