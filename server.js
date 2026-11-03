@@ -1208,21 +1208,42 @@ async function fillPartProperties(req, source, partId, values) {
 
 // The title block's drawing number box (next to the sheet size) reads the
 // drawing tab's own Part number, not the part's, so that's set too.
-async function fillDrawingNumber(req, ctx, drawingEid, number) {
+// A brand-new drawing's number box is always empty, and the Part number
+// property has the same ID on every drawing, so after the first lookup a new
+// drawing's number costs 1 call instead of 2.
+let drawingNumberPropId = null;
+async function fillDrawingNumber(req, ctx, drawingEid, number, { isNew = false } = {}) {
   if (!number) return;
   const path = `/metadata/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}`;
-  const meta = await onshapeFetch(req, path);
-  const prop = (meta.properties || []).find((p) => String(p.name || '').toLowerCase() === 'part number' && p.editable !== false);
-  if (!prop) throw new Error('Onshape didn\'t list a Part number property for the drawing');
-  if (String(prop.value || '') === number) return;
-  await onshapeFetch(req, path, {
-    method: 'POST',
-    body: JSON.stringify({ properties: [{ propertyId: prop.propertyId, value: number }] }),
-  });
+  let propertyId = isNew ? drawingNumberPropId : null;
+  if (!propertyId) {
+    const meta = await onshapeFetch(req, path);
+    const prop = (meta.properties || []).find((p) => String(p.name || '').toLowerCase() === 'part number' && p.editable !== false);
+    if (!prop) throw new Error('Onshape didn\'t list a Part number property for the drawing');
+    drawingNumberPropId = prop.propertyId;
+    if (String(prop.value || '') === number) return;
+    propertyId = prop.propertyId;
+  }
+  try {
+    await onshapeFetch(req, path, {
+      method: 'POST',
+      body: JSON.stringify({ properties: [{ propertyId, value: number }] }),
+    });
+  } catch (err) {
+    if (err.status === 400 || err.status === 404) drawingNumberPropId = null;
+    throw err;
+  }
 }
+
+// Title blocks already filled by this server (until it restarts), so asking
+// for a part's drawing again (a batch re-run, a reload) doesn't read and
+// rewrite the same properties every time: that was up to 4 calls each.
+const filledTitleBlocks = new Set();
 
 async function fillTitleBlock(req, ctx, { local, source, partId, drawingEid, partNumber, partName }) {
   const warnings = [];
+  const key = [drawingEid, source.dwe, source.configuration || '', partId, partNumber, partName].join('|');
+  if (filledTitleBlocks.has(key)) return warnings;
   if (local) {
     try {
       await fillPartProperties(req, source, partId, { number: partNumber, name: partName });
@@ -1236,6 +1257,10 @@ async function fillTitleBlock(req, ctx, { local, source, partId, drawingEid, par
   } catch (err) {
     console.error('Filling the drawing number failed:', err.message);
     warnings.push(`Couldn't fill the title block's drawing number (${err.status || err.message}).`);
+  }
+  if (!warnings.length) {
+    if (filledTitleBlocks.size > 5000) filledTitleBlocks.clear();
+    filledTitleBlocks.add(key);
   }
   return warnings;
 }
@@ -1359,10 +1384,13 @@ app.post('/api/onshape/make-drawing', express.json(), async (req, res) => {
     }
     // The drawing tab exists now, so its own number can be set.
     try {
-      await fillDrawingNumber(req, ctx, result.drawingId, partNumber);
+      await fillDrawingNumber(req, ctx, result.drawingId, partNumber, { isNew: true });
     } catch (err) {
       console.error('Filling the drawing number failed:', err.message);
       titleWarnings.push(`Couldn't fill the title block's drawing number (${err.status || err.message}).`);
+    }
+    if (!titleWarnings.length) {
+      filledTitleBlocks.add([result.drawingId, source.dwe, source.configuration || '', sourcePartId, partNumber, partName].join('|'));
     }
     result.warnings = [...titleWarnings, ...(result.warnings || [])];
     finish.resolve(result);
