@@ -200,6 +200,14 @@ function plateDetails(body, info, box) {
     fromSide.add(f.sign);
     depths.add(fmt(f.sign === '+' ? hi - f.pos : f.pos - lo));
   }
+  // Pocket floors go in the DXF on a layer per depth, e.g. POCKET_0-400IN,
+  // so the CAM software can pocket them (Micah 2026-11-03).
+  const pocketLayers = floors.map((f) => {
+    const depth = f.sign === '+' ? hi - f.pos : f.pos - lo;
+    const label = depth.toFixed(3).replace('.', '-');
+    const otherSide = fromSide.size > 1 && f.sign === (fromSide.has('+') ? '-' : '+');
+    return { faceId: f.id, layer: `POCKET_${label}IN${otherSide ? '_OTHER_SIDE' : ''}` };
+  });
   const pockets = floors.length > 0;
   // DXF from the outer face on the side without pockets, so pocket outlines
   // aren't mistaken for through-cuts. Pockets on both sides: largest face.
@@ -213,8 +221,8 @@ function plateDetails(body, info, box) {
   if (pockets) {
     notes.push(`Pockets or steps ${[...depths].map((d) => `${d}"`).join(', ')} deep: needs the CNC mill.`);
     notes.push(fromSide.size === 1
-      ? 'The DXF uses the flat back side (through-cuts only). Pocket depths go on the drawing.'
-      : 'Pockets on both sides: check the DXF face (select the side to cut from).');
+      ? 'The DXF is drawn from the flat back side: through-cuts on layer THROUGH, pockets on a layer per depth.'
+      : 'Pockets on both sides: the DXF has each on its own layer, but check the face it is drawn from.');
   }
   return {
     type: 'plate',
@@ -224,6 +232,7 @@ function plateDetails(body, info, box) {
     machine: pockets ? 'mill' : 'cnc',
     needsDxf: true,
     dxfFaceId: dxfFace ? dxfFace.id : null,
+    pocketLayers,
     summary: pockets ? `Pocketed plate, ${fmt(info.thickness)}" thick` : `Plate, ${fmt(info.thickness)}" thick`,
     notes,
   };

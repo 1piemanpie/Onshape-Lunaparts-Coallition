@@ -1845,10 +1845,23 @@ async function buildDxf(req, source, partId, faceId) {
   const body = details.bodiesById.get(partId);
   if (!body) throw new Error('Couldn\'t find the part in Onshape to make its DXF.');
 
+  // Pocketed plate: draw from the flat back side and put each pocket floor
+  // on its own layer, so the CAM software can pocket them.
+  let layers = [];
+  try {
+    const d = detectPart(body);
+    if (d && d.type === 'plate' && d.pockets && (!faceId || faceId === d.dxfFaceId)) {
+      if (!faceId) faceId = d.dxfFaceId;
+      layers = d.pocketLayers || [];
+    }
+  } catch (err) {
+    console.error('Pocket check for DXF failed:', err.message);
+  }
+
   // Splines and other curves need their tessellated points from Onshape.
   const { face } = pickFace(body, faceId);
   const edgePoints = new Map();
-  const extra = face ? edgesNeedingPoints(body, face) : [];
+  const extra = face ? edgesNeedingPoints(body, face, layers.map((l) => l.faceId)) : [];
   if (extra.length) {
     const query = new URLSearchParams({ partId });
     for (const id of extra) query.append('edgeId', id);
@@ -1857,7 +1870,7 @@ async function buildDxf(req, source, partId, faceId) {
       for (const e of b.edges || []) edgePoints.set(e.id, e.vertices || []);
     }
   }
-  return faceToDxf(body, faceId, edgePoints);
+  return faceToDxf(body, faceId, edgePoints, layers);
 }
 
 // Starts an Onshape export, waits for it, and returns the file's bytes.
