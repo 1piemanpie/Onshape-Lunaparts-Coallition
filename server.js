@@ -1456,6 +1456,32 @@ app.get('/api/luna/part-numbers', async (req, res) => {
   }
 });
 
+// For UPDATE FILES on a part that's already in LUNA: its LUNA id, the next
+// revision number, and which kinds of files it has, so the same kinds are
+// sent again. LUNA calls only (no Onshape calls).
+app.get('/api/luna/part-files', async (req, res) => {
+  if (!req.session.onshapeTokens) return res.status(401).json({ error: 'Log in with Onshape first.' });
+  const number = String(req.query.number || '').trim().toUpperCase();
+  if (!number || number.length > 80) return res.status(400).json({ error: 'Which part?' });
+  try {
+    const parts = await lunaGetAll('parts');
+    const part = parts.find((p) => String(p.part_number || '').trim().toUpperCase() === number);
+    if (!part) return res.status(404).json({ error: `${number} isn't in LUNA Parts.` });
+    const files = await lunaGetAll(`parts/${part.id}/attachments`);
+    const ext = (f) => String(f.extension || f.original_filename || f.filename || '').toLowerCase().split('.').pop();
+    const highest = files.reduce((n, f) => Math.max(n, Number(f.revision) || 1), 0);
+    res.json({
+      lunaPartId: part.id,
+      nextRevision: highest + 1,
+      hadDxf: files.some((f) => ext(f) === 'dxf'),
+      hadStep: files.some((f) => ['step', 'stp'].includes(ext(f))),
+    });
+  } catch (err) {
+    console.error('LUNA Parts file lookup failed:', err);
+    res.status(502).json({ error: 'Could not read the part from LUNA Parts.' });
+  }
+});
+
 // Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
 // The API mentions a project_id filter without documenting it, so we pass
 // it and also filter here in case it's ignored.
@@ -1768,6 +1794,8 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   // DXFs are only for parts cut on the CNC; the panel decides from the Machine.
   const wantDxf = b.wantDxf !== false;
   const wantStep = b.wantStep === true;
+  // UPDATE FILES sends the files again as the next revision.
+  const revision = optionalNumber(b.revision, { integer: true });
   const fileBase = safeFileName(b.partNumber);
   if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
   if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
@@ -1829,6 +1857,10 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   try {
     const form = new FormData();
     for (const f of files) form.append('files[]', new Blob([f.data], { type: f.type }), f.name);
+    if (revision && revision > 1) {
+      form.append('revision', String(revision));
+      form.append('description', 'Updated from Onshape');
+    }
 
     const lunaRes = await fetch(`${LUNA_API_BASE}/parts/${lunaPartId}/attachments`, {
       method: 'POST',
