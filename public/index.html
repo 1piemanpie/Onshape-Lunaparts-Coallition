@@ -255,6 +255,7 @@
   .part-row.found .part-sub, .part-row.found .qty { color: #e4e4e7; }
   /* Assembly hardware sits under a fold at the bottom of the list. */
   .hw-fold { border-top: 1px solid var(--line); }
+  .dxf-check { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
   .hw-fold summary {
     padding: 7px 10px; cursor: pointer; font-family: var(--heading); font-weight: 700;
     font-size: 12px; letter-spacing: 0.08em; color: var(--muted); background: #fafafa;
@@ -445,6 +446,7 @@
         <label for="toolSelect">Machine</label>
         <select id="toolSelect" class="chips" disabled><option value="">Loading&hellip;</option></select>
         <p id="toolWhy" class="hint left"></p>
+        <p id="detectHint" class="hint left"></p>
       </div>
 
       <div class="field full">
@@ -488,6 +490,7 @@
       <div class="field">
         <label for="cutLengthInput">Cut Length</label>
         <input id="cutLengthInput" type="number" min="0" step="any" />
+        <p id="cutWhy" class="hint left"></p>
       </div>
       <div class="field">
         <label for="parentSelect">Parent Assembly</label>
@@ -936,7 +939,29 @@
       if (part.group === 'hardware' || part.group === 'block') return part.group;
       return 'main';
     };
-    foldFor('uploaded', 'ALREADY IN LUNA PARTS', state.parts.filter((p) => section(p) === 'uploaded'));
+    const uploadedFold = foldFor('uploaded', 'ALREADY IN LUNA PARTS', state.parts.filter((p) => section(p) === 'uploaded'));
+    if (uploadedFold) {
+      // Parts sent before auto-detect (e.g. box tube with extra holes) may
+      // be missing their DXF. One tap checks them all.
+      const bar = document.createElement('div');
+      bar.className = 'dxf-check';
+      const find = document.createElement('button');
+      find.type = 'button';
+      find.className = 'see';
+      find.textContent = dxfCheck.running ? 'CHECKING\u2026' : 'FIND MISSING DXFs';
+      find.disabled = dxfCheck.running;
+      find.title = 'Check which of these parts should have a DXF in LUNA Parts but don\u2019t. Costs about 1 Onshape call per Part Studio, none per part.';
+      find.addEventListener('click', (event) => {
+        event.preventDefault();
+        findMissingDxfs(state.parts.filter((p) => section(p) === 'uploaded'));
+      });
+      const note = document.createElement('span');
+      note.className = 'part-sub';
+      note.textContent = dxfCheck.summary;
+      bar.append(find, note);
+      uploadedFold.appendChild(bar);
+      if (dxfCheck.running || dxfCheck.summary) uploadedFold.open = true;
+    }
     foldFor('block', 'BLOCK CAD (DERIVED)', state.parts.filter((p) => section(p) === 'block'));
     foldFor('hardware', 'HARDWARE & COTS', state.parts.filter((p) => section(p) === 'hardware'));
     for (const part of state.parts) {
@@ -976,6 +1001,13 @@
         sub.appendChild(qty);
       }
       text.append(name, sub);
+      const dxfResult = dxfCheck.byPart.get(part.partId);
+      if (dxfResult && dxfResult.missing) {
+        const line = document.createElement('span');
+        line.className = 'twin ask';
+        line.textContent = `\u26a0 No DXF in LUNA, but it needs one (${dxfResult.why}). Tap ADD DXF.`;
+        text.appendChild(line);
+      }
       for (const twin of twinInfos(part)) {
         const line = document.createElement('span');
         const others = twin.others.map((p) => p.name).join(', ');
@@ -1044,7 +1076,8 @@
         update = document.createElement('button');
         update.type = 'button';
         update.className = 'see';
-        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : 'UPDATE FILES';
+        const addDxf = dxfResult && dxfResult.missing;
+        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : (addDxf ? 'ADD DXF' : 'UPDATE FILES');
         update.disabled = updatingFiles.has(part.partId);
         update.title = 'Upload this part\u2019s drawing PDF (and DXF/STEP if it had them) to LUNA Parts again, as the next revision';
         update.addEventListener('click', (event) => {
@@ -1064,6 +1097,40 @@
     renderStagedBar();
   }
 
+  // ---- Find parts in LUNA that are missing their DXF -------------------------
+  const dxfCheck = { running: false, summary: '', byPart: new Map() };
+  async function findMissingDxfs(parts) {
+    if (dxfCheck.running || !parts.length) return;
+    dxfCheck.running = true;
+    dxfCheck.summary = '';
+    renderPartList();
+    try {
+      const body = await getJson('/api/luna/dxf-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parts: parts.map((p) => ({ partId: p.partId, number: lunaNumberOf(p) || p.name })) }),
+      });
+      dxfCheck.byPart = new Map(body.results.map((r) => [r.partId, r]));
+      const missing = body.results.filter((r) => r.missing);
+      dxfCheck.summary = missing.length
+        ? `${missing.length} part${missing.length === 1 ? ' needs' : 's need'} a DXF. Tap ADD DXF on each.`
+        : 'Every part that needs a DXF has one.';
+      log(missing.length ? `Missing DXFs: ${missing.map((r) => r.number).join(', ')}.` : 'No missing DXFs in LUNA Parts.', missing.length ? 'error' : 'success');
+    } catch (err) {
+      dxfCheck.summary = `Couldn't check: ${err.message}`;
+      log(`Couldn't check for missing DXFs: ${err.message}`, 'error');
+    } finally {
+      dxfCheck.running = false;
+      if (state.screen === 'list') renderPartList();
+    }
+  }
+
+  // For a plate: does the machine guess say CNC (not a printer or lathe)?
+  function guessToolIsCnc(part) {
+    const guess = guessTool(part);
+    return !guess || (/cnc|mill|router/i.test(guess.tool.name) && !/lathe/i.test(guess.tool.name));
+  }
+
   // ---- Update files of a part already in LUNA --------------------------------
   const updatingFiles = new Set();
   async function updateLunaFiles(part) {
@@ -1081,7 +1148,17 @@
       const drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
-      if (!drawing && !info.hadDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      // Auto-detect may say it needs a DXF it never got (e.g. box tube with
+      // extra holes sent before step 4). Shape data is cached per Part Studio.
+      let shape = null;
+      try { shape = await fetchShape(part); } catch (err) { /* keep going without it */ }
+      const detect = part.detect || (shape && shape.detect) || null;
+      const found = dxfCheck.byPart.get(part.partId);
+      const missingDxf = !info.hadDxf && Boolean((found && found.missing)
+        || (detect && detect.needsDxf && detect.type === 'tube')
+        || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
+      const wantDxf = info.hadDxf || missingDxf;
+      if (!drawing && !wantDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
       if (number.toUpperCase() !== lunaNumber.toUpperCase()) {
         await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
           method: 'POST',
@@ -1096,9 +1173,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           partId: part.partId,
-          faceId: (state.faces.get(part.partId) || {}).faceId || null,
+          faceId: dxfFaceFor(part),
+          dxfSides: dxfSidesFor(part),
           drawingId: drawing ? drawing.id : null,
-          wantDxf: info.hadDxf,
+          wantDxf,
           wantStep: info.hadStep,
           partNumber: number,
           revision: info.nextRevision,
@@ -1106,6 +1184,10 @@
       });
       for (const note of body.notes || []) log(note, 'error');
       log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${info.nextRevision}.`, 'success');
+      if (missingDxf) {
+        if (found) found.missing = false;
+        log(`${number} had no DXF in LUNA, so one was added.`, 'success');
+      }
       showToast(`\u2713 ${number} updated (rev ${info.nextRevision})`, 3000);
     } catch (err) {
       for (const note of (err.body && err.body.notes) || []) log(note, 'error');
@@ -1153,6 +1235,10 @@
   const MACHINE_RULES = [
     { test: (p, m) => /srpp|polypropylene/.test(m), tools: [/router/, /cnc|mill/], why: 'SRPP is routed' },
     { test: (p, m) => /pa6|nylon|pla\b|pla\+|petg|onyx|tpu|print/.test(m), tools: [/print|3d/], why: '3D-printed material' },
+    // Auto-detect (step 4): box tube and pocketed plates.
+    { test: (p) => p.detect && p.detect.type === 'tube' && p.detect.needsDxf, tools: [/cnc|mill/, /router/], why: 'box tube with holes to mill' },
+    { test: (p) => p.detect && p.detect.type === 'tube', tools: [/saw/], why: 'pre-drilled or plain box tube, just cut to length' },
+    { test: (p) => p.detect && p.detect.type === 'plate' && p.detect.pockets, tools: [/cnc|mill/, /router/], why: 'plate with pockets' },
     { test: (p) => p.shape === 'shaft', tools: [/lathe/], why: 'long and round/hex, like a shaft' },
     { test: (p) => p.group === 'stock' || /shaft|spacer|round tube/i.test(p.name), tools: [/lathe/], why: 'shaft or spacer' },
     { test: (p, m) => /alum|6061|7075|polycarb|lexan|delrin|acetal|hdpe|uhmw|carbon/.test(m), tools: [/cnc|mill/, /router/], why: 'plate material' },
@@ -1971,6 +2057,7 @@
       part.shapeRequest = getJson(`/api/onshape/part-shape?partId=${encodeURIComponent(part.partId)}`).then((body) => {
         part.dims = body.dims;
         if (part.shape === undefined) { part.shape = body.shape; part.thickness = body.thickness; }
+        if (part.detect === undefined) part.detect = body.detect || null;
         return body;
       });
       part.shapeRequest.catch(() => { part.shapeRequest = null; });
@@ -2002,6 +2089,9 @@
     if (cardProjectSelect.value !== loadedAssembliesFor) loadAssemblies(cardProjectSelect.value);
     state.toolTouched = false;
     state.thicknessTouched = false;
+    state.cutTouched = false;
+    el('cutWhy').textContent = '';
+    el('detectHint').textContent = '';
     applyToolGuess(part);
     highlightPart(part);
     loadShape(part);
@@ -2029,6 +2119,7 @@
       el('cardTitle').textContent = saved.number;
       state.toolTouched = true;
       state.thicknessTouched = true;
+      state.cutTouched = true;
       updateAttachHint();
       checkNumber();
     }
@@ -2086,6 +2177,7 @@
 
   function applyShape(part) {
     if (!state.toolTouched) applyToolGuess(part);
+    showDetect(part);
     // Shafts and spacers don't have a stock thickness (Micah), even a thin
     // spacer whose size looks plate-like.
     const lathePart = part.group === 'stock' || /shaft|spacer|bushing|standoff/i.test(part.name)
@@ -2097,6 +2189,20 @@
       const match = options.find((o) => Math.abs(o.inches - part.thickness) <= 0.01);
       if (match) thicknessSelect.value = match.value;
     }
+  }
+
+  // What auto-detect found (plate, box tube, shaft) and the saw cut. These
+  // are suggestions: every field can still be changed by hand.
+  function showDetect(part) {
+    const d = part.detect;
+    const hint = el('detectHint');
+    hint.textContent = d && d.summary ? [`Auto-detect: ${d.summary}.`, ...(d.notes || [])].join(' ') : '';
+    const cut = el('cutLengthInput');
+    if (d && d.sawCut && !cut.value && !state.cutTouched) {
+      cut.value = String(d.sawCut.cutTo);
+      el('cutWhy').textContent = `(${d.sawCut.note})`;
+    }
+    updateAttachHint();
   }
 
   // Selects the part on screen in Onshape so it's clear which one the card
@@ -2360,7 +2466,8 @@
       number,
       part,
       values,
-      faceId: face.faceId || null,
+      faceId: dxfFaceFor(onshapePart),
+      dxfSides: dxfSidesFor(onshapePart),
       wantDxf: wantsDxf(onshapePart),
       wantStep: el('stepInput').checked,
       drawing,
@@ -2592,6 +2699,7 @@
         part: s.part,
         onshapePart: state.parts.find((p) => p.partId === s.partId) || s.onshape,
         faceId: s.faceId,
+        dxfSides: s.dxfSides || [],
         drawingId: s.drawing.state === 'ready' ? s.drawing.id : '',
         wantDxf: s.wantDxf,
         wantStep: s.wantStep,
@@ -2696,6 +2804,7 @@
         body: JSON.stringify({
           partId: job.onshapePart.partId,
           faceId: job.faceId,
+          dxfSides: job.dxfSides || [],
           drawingId: job.drawingId,
           wantDxf: job.wantDxf,
           wantStep: job.wantStep,
@@ -2736,10 +2845,24 @@
   // DXFs are only for parts cut on the CNC. With no machine picked, a
   // Part Studio part still gets one (as before), but shafts and spacers don't.
   function wantsDxf(part) {
+    // Box tube: only when it has holes or cuts to mill (auto-detect).
+    if (part && part.detect && part.detect.type === 'tube' && !part.detect.needsDxf) return false;
     const option = toolSelect.selectedOptions[0];
     const machine = toolSelect.value && option ? option.textContent : '';
     if (machine) return /cnc|mill|router/i.test(machine) && !/lathe/i.test(machine);
     return Boolean(part) && !['stock', 'hardware', 'block'].includes(part.group);
+  }
+
+  // Auto-detect's DXF faces: one per side of a box tube with holes to mill,
+  // or the flat back of a pocketed plate. A face the user selected wins.
+  function dxfSidesFor(part) {
+    if (!part || state.faces.has(part.partId)) return [];
+    return (part.detect && part.detect.type === 'tube' && part.detect.dxfSides) || [];
+  }
+  function dxfFaceFor(part) {
+    const face = state.faces.get(part.partId);
+    if (face) return face.faceId || null;
+    return (part.detect && part.detect.dxfFaceId) || null;
   }
 
   // Says up front what Upload will attach, so a missing drawing is obvious
@@ -2748,7 +2871,10 @@
     const part = currentPart();
     if (!part) return;
     const face = state.faces.get(part.partId);
+    const sides = !face && dxfSidesFor(part);
     const dxf = !wantsDxf(part) ? ''
+      : sides && sides.length ? `DXFs of the ${sides.map((x) => x.side).join(' and ')} sides`
+      : !face && part.detect && part.detect.dxfFaceId ? 'DXF of the flat back side'
       : face
         ? (face.flatFace ? 'DXF of the selected face' : 'DXF of the largest flat face (selected face isn’t flat)')
         : 'DXF of the largest flat face';
@@ -2963,6 +3089,7 @@
   drawingSelect.addEventListener('change', updateAttachHint);
   toolSelect.addEventListener('change', () => { state.toolTouched = true; el('toolWhy').textContent = ''; updateAttachHint(); });
   thicknessSelect.addEventListener('change', () => { state.thicknessTouched = true; });
+  el('cutLengthInput').addEventListener('input', () => { state.cutTouched = true; el('cutWhy').textContent = ''; });
   cardProjectSelect.addEventListener('change', () => {
     el('projectWhy').textContent = '';
     loadAssemblies(cardProjectSelect.value);

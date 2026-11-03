@@ -5,6 +5,7 @@ const path = require('path');
 const { faceToDxf, edgesNeedingPoints, isPlanar, pickFace, REAM_UNDERSIZE_IN } = require('./dxf');
 const { compareBodies } = require('./twins');
 const { makeDrawing } = require('./drawings');
+const { detectPart, bodyBox } = require('./detect');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -697,6 +698,40 @@ function partBox(req, source, partId) {
     `/parts/${src.dwe}/partid/${encodeURIComponent(partId)}/boundingboxes${sourceQuery(src)}`), { extra: partId });
 }
 
+// The part's size and what it looks like it is (plate, box tube, shaft),
+// with suggestions for the card: Machine, Thickness, Cut Length and which
+// DXFs to make (detect.js). Everything comes from the Part Studio's
+// bodydetails, which is fetched once per Part Studio and document version
+// and shared with DXFs, twins and drawings: 0 extra Onshape calls per part.
+// Only if the part can't be found there does it fall back to the part's
+// bounding box (1 call, cached).
+async function partShape(req, partId) {
+  const { source, partId: sourcePartId } = await resolvePart(req, partId);
+  let body = null;
+  try {
+    const details = await getBodyDetails(req, source);
+    body = details.bodiesById.get(sourcePartId) || null;
+  } catch (err) {
+    if (err.status === 402) throw err;
+    console.error('bodydetails for part shape failed:', err.message);
+  }
+  const box = (body && bodyBox(body)) || await partBox(req, source, sourcePartId);
+  const dims = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
+    .map((m) => m / METERS_PER_INCH)
+    .sort((a, b) => a - b);
+  const [small, mid, long] = dims;
+  let shape = 'block';
+  if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
+  else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
+  let detect = null;
+  try {
+    detect = body ? detectPart(body, box) : null;
+  } catch (err) {
+    console.error('Auto-detect failed:', err.message);
+  }
+  return { shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null, detect };
+}
+
 app.get('/api/onshape/part-shape', async (req, res) => {
   const dwe = currentDwe(req);
   if (!dwe) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
@@ -704,16 +739,7 @@ app.get('/api/onshape/part-shape', async (req, res) => {
   if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
 
   try {
-    const { source, partId: sourcePartId } = await resolvePart(req, partId);
-    const box = await partBox(req, source, sourcePartId);
-    const dims = [box.highX - box.lowX, box.highY - box.lowY, box.highZ - box.lowZ]
-      .map((m) => m / METERS_PER_INCH)
-      .sort((a, b) => a - b);
-    const [small, mid, long] = dims;
-    let shape = 'block';
-    if (long >= 3 * mid && mid <= 1.3 * small && mid <= 2.5) shape = 'shaft';
-    else if (small <= 0.5 && mid >= 4 * small) shape = 'plate';
-    res.json({ shape, dims: dims.map((d) => Number(d.toFixed(4))), thickness: shape === 'plate' ? Number(small.toFixed(4)) : null });
+    res.json(await partShape(req, partId));
   } catch (err) {
     console.error('Part shape lookup failed:', err.message);
     res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
@@ -1482,6 +1508,65 @@ app.get('/api/luna/part-files', async (req, res) => {
   }
 });
 
+// FIND MISSING DXFs: for parts already in LUNA, which ones should have a DXF
+// (auto-detect says plate, or box tube with holes to mill) but have none.
+// Onshape cost: bodydetails once per Part Studio (shared with everything
+// else, cached by document version), 0 per part. LUNA cost: the parts and
+// tools lists once, plus one attachments list per part.
+const NO_DXF_TOOLS = /lathe|saw|print|3d/i;
+app.post('/api/luna/dxf-check', express.json(), async (req, res) => {
+  if (!req.session.onshapeTokens) return res.status(401).json({ error: 'Log in with Onshape first.' });
+  if (!currentDwe(req)) return res.status(401).json({ error: 'Open the panel from inside Onshape first.' });
+  const asked = (Array.isArray((req.body || {}).parts) ? req.body.parts : [])
+    .filter((p) => p && /^[\x21-\x7E]{1,128}$/.test(String(p.partId || '')) && String(p.number || '').trim())
+    .slice(0, 200);
+  try {
+    const [lunaParts, tools] = await Promise.all([lunaGetAll('parts'), lunaGetAll('tools')]);
+    const byNumber = new Map(lunaParts.map((p) => [String(p.part_number || '').trim().toUpperCase(), p]));
+    const toolName = new Map(tools.map((t) => [t.id, String(t.name || '')]));
+    const results = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < asked.length) {
+        const ask = asked[next++];
+        const number = String(ask.number).trim().toUpperCase();
+        const out = { partId: String(ask.partId), number, missing: false, why: '' };
+        results.push(out);
+        try {
+          const lunaPart = byNumber.get(number);
+          if (!lunaPart) { out.why = 'Not found in LUNA.'; continue; }
+          const shape = await partShape(req, out.partId);
+          const d = shape.detect;
+          const tool = toolName.get(lunaPart.tool_id) || '';
+          let needs = false;
+          if (d && d.type === 'tube') {
+            needs = d.needsDxf;
+            out.why = d.needsDxf ? `box tube with holes to mill (${d.dxfSides.map((x) => x.side).join(' + ')} side)` : '';
+          } else if (d && d.type === 'plate') {
+            needs = !NO_DXF_TOOLS.test(tool);
+            out.why = needs ? (d.pockets ? 'pocketed plate' : 'plate') : '';
+          } else if (/cnc|mill|router/i.test(tool) && !/lathe/i.test(tool)) {
+            needs = true;
+            out.why = `machine in LUNA is ${tool}`;
+          }
+          if (!needs) continue;
+          const files = await lunaGetAll(`parts/${lunaPart.id}/attachments`);
+          const ext = (f) => String(f.extension || f.original_filename || f.filename || '').toLowerCase().split('.').pop();
+          out.missing = !files.some((f) => ext(f) === 'dxf');
+        } catch (err) {
+          if (err.status === 402) throw err;
+          out.why = err.message;
+        }
+      }
+    };
+    await Promise.all([1, 2, 3, 4].map(worker));
+    res.json({ results });
+  } catch (err) {
+    console.error('DXF check failed:', err);
+    res.status(502).json({ error: err.status === 402 ? onshapeErrorMessage(err) : 'Could not check the parts in LUNA Parts.' });
+  }
+});
+
 // UPDATE FILES on a part renamed in Onshape after upload (E018 -> 26O-E018):
 // gives the LUNA part the new number too. LUNA's edit needs the required
 // fields sent back, so the part is read first.
@@ -1838,6 +1923,11 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   // UPDATE FILES sends the files again as the next revision.
   const revision = optionalNumber(b.revision, { integer: true });
   const fileBase = safeFileName(b.partNumber);
+  // Box tube with holes to mill: one DXF per side (auto-detect), e.g.
+  // "26O-E003 top side.dxf". A face the user picked wins over these.
+  const dxfSides = (Array.isArray(b.dxfSides) ? b.dxfSides : [])
+    .filter((d) => d && /^[\x21-\x7E]{1,128}$/.test(String(d.faceId || '')) && /^[a-z]{2,10}$/.test(String(d.side || '')))
+    .slice(0, 6);
   if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
   if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
     return res.status(400).json({ error: 'Click the part in Onshape first.' });
@@ -1856,13 +1946,18 @@ app.post('/api/luna/parts/:id/attachments', express.json(), async (req, res) => 
   }
 
   const [dxf, pdf, step] = await Promise.allSettled([
-    wantDxf ? buildDxf(req, resolved.source, resolved.partId, faceId) : Promise.resolve(null),
+    !wantDxf ? Promise.resolve(null)
+      : dxfSides.length && !faceId
+        ? Promise.all(dxfSides.map(async (d) => ({ ...(await buildDxf(req, resolved.source, resolved.partId, String(d.faceId))), side: d.side })))
+        : buildDxf(req, resolved.source, resolved.partId, faceId),
     drawingId ? exportDrawingPdf(req, ctx, drawingId, `${fileBase} drawing`) : Promise.resolve(null),
     wantStep ? exportStep(req, resolved.source, resolved.partId, fileBase) : Promise.resolve(null),
   ]);
 
   if (!wantDxf) {
     // Not a CNC part: no DXF wanted, so nothing to report.
+  } else if (dxf.status === 'fulfilled' && Array.isArray(dxf.value)) {
+    for (const d of dxf.value) files.push({ name: `${fileBase} ${d.side} side.dxf`, type: 'application/dxf', data: d.dxf });
   } else if (dxf.status === 'fulfilled') {
     files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf });
     const reamed = dxf.value.reamed || [];
