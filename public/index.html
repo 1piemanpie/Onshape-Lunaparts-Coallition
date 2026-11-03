@@ -1031,7 +1031,24 @@
         });
       }
 
-      row.append(box, text, ...(cots ? [cots] : []), tag);
+      // Parts already in LUNA: send the current drawing (and DXF/STEP if it
+      // had them) again as the next revision.
+      let update = null;
+      if (isUploaded(part) && part.group !== 'hardware' && part.group !== 'block') {
+        update = document.createElement('button');
+        update.type = 'button';
+        update.className = 'see';
+        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : 'UPDATE FILES';
+        update.disabled = updatingFiles.has(part.partId);
+        update.title = 'Upload this part\u2019s drawing PDF (and DXF/STEP if it had them) to LUNA Parts again, as the next revision';
+        update.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          updateLunaFiles(part);
+        });
+      }
+
+      row.append(box, text, ...(update ? [update] : []), ...(cots ? [cots] : []), tag);
       (folds[section(part)] || list).appendChild(row);
     }
     if (folds.uploaded) list.appendChild(folds.uploaded);
@@ -1039,6 +1056,42 @@
     if (folds.hardware) list.appendChild(folds.hardware);
     updateListFooter();
     renderStagedBar();
+  }
+
+  // ---- Update files of a part already in LUNA --------------------------------
+  const updatingFiles = new Set();
+  async function updateLunaFiles(part) {
+    const number = lunaNumberFor(part) || part.name;
+    const drawing = (state.drawings || []).find((d) => firstWord(d.name) === firstWord(number));
+    updatingFiles.add(part.partId);
+    renderPartList();
+    try {
+      const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(number)}`);
+      if (!drawing && !info.hadDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      const body = await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/attachments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          partId: part.partId,
+          faceId: (state.faces.get(part.partId) || {}).faceId || null,
+          drawingId: drawing ? drawing.id : null,
+          wantDxf: info.hadDxf,
+          wantStep: info.hadStep,
+          partNumber: number,
+          revision: info.nextRevision,
+        }),
+      });
+      for (const note of body.notes || []) log(note, 'error');
+      log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${info.nextRevision}.`, 'success');
+      showToast(`\u2713 ${number} updated (rev ${info.nextRevision})`, 3000);
+    } catch (err) {
+      for (const note of (err.body && err.body.notes) || []) log(note, 'error');
+      log(`Couldn't update ${number}: ${err.message}`, 'error');
+      showToast(`Update failed: ${err.message}`, 6000);
+    } finally {
+      updatingFiles.delete(part.partId);
+      if (state.screen === 'list') renderPartList();
+    }
   }
 
   function updateListFooter() {
