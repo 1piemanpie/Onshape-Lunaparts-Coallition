@@ -1,4 +1,4 @@
-// Preloaded into the server by test/run.js: replaces fetch with fixed
+// Preloaded into the server by test/api.test.js: replaces fetch with fixed
 // Onshape and LUNA Parts answers, and logs every outgoing call to MOCK_LOG.
 const fs = require('fs');
 const LOG = process.env.MOCK_LOG;
