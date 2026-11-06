@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const express = require('express');
-const { ONSHAPE_ID } = require('../lib/onshape/api');
+const { panelContextQuery } = require('../lib/schemas');
 
 const router = express.Router();
 
@@ -22,8 +22,9 @@ function callbackUrl(req) {
 // panel knows which Part Studio it's sitting in once login finishes.
 
 router.get('/oauth/login', (req, res) => {
-  const { documentId, workspaceId, elementId } = req.query;
-  if ([documentId, workspaceId, elementId].every((id) => ONSHAPE_ID.test(id || ''))) {
+  const ids = panelContextQuery.safeParse(req.query);
+  if (ids.success) {
+    const { documentId, workspaceId, elementId } = ids.data;
     req.session.onshapeContext = { documentId, workspaceId, elementId };
   }
 

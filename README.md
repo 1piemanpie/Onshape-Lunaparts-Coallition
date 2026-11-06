@@ -57,7 +57,8 @@ code, in `.env.example`, or in chat.
 | `routes/auth.js` | Logging in with Onshape (OAuth) and `/api/session` |
 | `routes/onshape.js` | The panel's Onshape routes: parts list, clicks, shapes, pictures, twins, numbering, drawings |
 | `routes/luna.js` | The panel's LUNA Parts routes: dropdown lists, creating parts, renumbering, uploading files |
-| `lib/middleware.js` | Checks shared by the routes: logged in, opened inside Onshape, LUNA key set |
+| `lib/middleware.js` | Checks shared by the routes: logged in, opened inside Onshape, LUNA key set, `validate()` |
+| `lib/schemas.js` | What each route accepts, as [zod](https://zod.dev) schemas, with the panel's error messages |
 | `lib/luna.js` | Calling the LUNA Parts API (key, paging, statuses) |
 | `lib/onshape/api.js` | Calling the Onshape API, counting calls, pausing after a 402 |
 | `lib/onshape/cache.js` | Caching Onshape answers by document version |
@@ -70,6 +71,7 @@ code, in `.env.example`, or in chat.
 | `lib/twins.js` | Tells copies of a part from mirror images |
 | `public/index.html` | The panel itself (HTML, CSS and JavaScript in one file) |
 | `package.json`, `package-lock.json` | The packages the server needs, at exact versions |
+| `test/` | `npm test`: replays ~150 requests against fake Onshape and LUNA Parts and checks nothing changed |
 
 ## Running it on your own computer (optional)
 
@@ -83,6 +85,12 @@ Only needed if you want to change the code and try it before pushing. You need
 
 Onshape only opens the panel from the Render address, so most testing still
 happens on Render after a merge to `master`.
+
+`npm test` needs no keys and calls nothing real: it starts the server with
+fake Onshape and LUNA Parts answers, sends it every kind of request, and
+compares the answers (and every call the server tried to make) with the saved
+ones in `test/expected/`. If a change is meant to alter behaviour, check the
+differences it prints, then run `npm test -- --update` to save the new ones.
 
 ## Deploying
 
