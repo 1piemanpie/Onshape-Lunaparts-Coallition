@@ -99,7 +99,7 @@ globalThis.fetch = async (url, opts = {}) => {
     if (q.startsWith('/metadata/')) {
       if (method === 'POST') return json({});
       if (q.includes('/p/')) return json({ properties: [{ name: 'Name', propertyId: 'pName', value: 'x' }, { name: 'Part number', propertyId: 'pNum', value: '' }, { name: 'Title 1', propertyId: 'pT1', value: '' }, { name: 'Description', propertyId: 'pDesc', value: '' }] });
-      return json({ properties: [{ name: 'Part number', propertyId: 'dNum', value: '' }] });
+      return json({ properties: [{ name: 'Part number', propertyId: 'dNum', value: '' }, { name: 'Title 1', propertyId: 'dT1', value: '' }] });
     }
     // The document's existing drawing (26O-E001 Drawing 1) is an empty sheet.
     if (q.endsWith('/translations') && method === 'POST') return json({ id: `T${++seq}`, requestState: 'DONE', resultExternalDataIds: [`${q.includes(`/e/${DRW}/`) ? 'XE' : 'X'}${seq}`] });
