@@ -16,7 +16,7 @@ const { runTranslation } = require('../lib/onshape/exports');
 const { lunaGetAll } = require('../lib/luna');
 const { isPlanar } = require('../lib/dxf');
 const { compareBodies } = require('../lib/twins');
-const { makeDrawing } = require('../lib/drawings');
+const { makeDrawing, hasViews, deleteDrawingTab } = require('../lib/drawings');
 const { requireLogin, requirePanel, validate } = require('../lib/middleware');
 const schemas = require('../lib/schemas');
 
@@ -399,10 +399,19 @@ router.get('/api/onshape/drawings', requirePanel, async (req, res) => {
 // reloads while a drawing is being made, it asks again; that ask waits for
 // the first one instead of making a second drawing.
 const drawingsInFlight = new Map();
+// Drawing tabs this server finished (views added), so a re-ask doesn't pay
+// to check them for views again.
+const drawingsMadeHere = new Set();
+
+function drawingJson(req, ctx) {
+  return async (drawingEid) => JSON.parse(String(await runTranslation(req,
+    `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
+    { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' }, ctx.documentId, 'drawing data')));
+}
 
 router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.makeDrawingBody), async (req, res) => {
   const ctx = req.session.onshapeContext;
-  const { partId, partNumber, quantity: qty, material, partName, force } = req.input;
+  const { partId, partNumber, quantity: qty, material, partName, force, check } = req.input;
 
   const flightKey = `${ctx.documentId}:${partNumber.split(/\s+/)[0].toUpperCase()}`;
   const running = !force && drawingsInFlight.get(flightKey);
@@ -440,7 +449,29 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
     const drawings = elements.filter((e) => e.elementType === 'DRAWING'
       || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
     const key = partNumber.split(/\s+/)[0].toUpperCase();
-    const existing = drawings.find((e) => String(e.name || '').split(/\s+/)[0].toUpperCase() === key);
+    let existing = drawings.find((e) => String(e.name || '').split(/\s+/)[0].toUpperCase() === key);
+    const names = new Set(drawings.map((e) => e.name));
+    // Asked again after the panel reloaded (or the server restarted) part
+    // way through, or after a RETRY: the tab may have been made without its
+    // views. An empty tab is removed and the drawing made fresh, instead of
+    // being handed back as the part's drawing.
+    if (existing && !force && check && !drawingsMadeHere.has(existing.id)) {
+      const api = (path, options) => onshapeFetch(req, path, options);
+      let empty = false;
+      try { empty = !(await hasViews(api, ctx, existing.id, drawingJson(req, ctx))); } catch (err) { /* can't tell: keep it */ }
+      if (empty && await deleteDrawingTab(api, ctx, existing.id)) {
+        console.log(`[drawings] removed empty tab ${existing.name}`);
+        names.delete(existing.name);
+        if (saved) {
+          const tabs = await saved.value.catch(() => null);
+          const i = tabs ? tabs.findIndex((t) => t.id === existing.id) : -1;
+          if (i >= 0) tabs.splice(i, 1);
+        }
+        existing = null;
+      } else if (!empty) {
+        drawingsMadeHere.add(existing.id);
+      }
+    }
     if (existing && !force) {
       // The title block reads the part's properties live, so filling them
       // also fixes a drawing made before they were filled.
@@ -451,7 +482,6 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
       return res.json({ drawingId: existing.id, name: existing.name, existing: true, warnings });
     }
     let n = 1;
-    const names = new Set(drawings.map((e) => e.name));
     while (names.has(`${partNumber} Drawing ${n}`)) n += 1;
     const name = `${partNumber} Drawing ${n}`;
 
@@ -488,10 +518,9 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
       linked: !local,
       qty,
       material,
-      exportJson: async (drawingEid) => JSON.parse(String(await runTranslation(req,
-        `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
-        { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' }, ctx.documentId, 'drawing data'))),
+      exportJson: drawingJson(req, ctx),
     });
+    if (!result.viewsMissing) drawingsMadeHere.add(result.drawingId);
     // The document now has a new tab. Add it to the saved list so the next
     // drawing in a batch can check names without asking Onshape again; the
     // Drawing picker still re-reads the list on its next load.
