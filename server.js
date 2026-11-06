@@ -7,12 +7,15 @@
 //   lib/onshape/       calling Onshape, caching, parts, title blocks, exports
 //   lib/luna.js        calling LUNA Parts
 //   lib/middleware.js  checks shared by the routes (logged in? inside Onshape?)
+//   lib/schemas.js     what each route accepts (zod)
+//   lib/session-store.js  where logins are kept (Render Key Value or memory)
 //   lib/*.js           geometry: DXFs, drawings, part detection, twins
 
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const { countOnshapeCalls } = require('./lib/onshape/api');
+const { sessionStore } = require('./lib/session-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +26,8 @@ const PORT = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 
 app.use(session({
+  // Render Key Value when REDIS_URL is set, otherwise memory.
+  store: sessionStore(),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,

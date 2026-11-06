@@ -46,6 +46,7 @@ code, in `.env.example`, or in chat.
 | `SESSION_SECRET` | yes | A long random string that signs the login cookie |
 | `LUNA_PARTS_API_KEY` | yes | A LUNA Parts API token whose user is an editor |
 | `LUNA_PARTS_API_BASE` | no | Defaults to `https://build.lunatecs.org/api/v1` |
+| `REDIS_URL` | recommended | Render Key Value's internal address. Keeps logins across deploys ([how](docs/render-setup.md#4-keep-logins-across-restarts-render-key-value-free)) |
 | `ONSHAPE_API_BASE` | no | Defaults to `https://cad.onshape.com/api` |
 | `PORT` | no | Render sets this itself |
 
@@ -58,6 +59,7 @@ code, in `.env.example`, or in chat.
 | `routes/onshape.js` | The panel's Onshape routes: parts list, clicks, shapes, pictures, twins, numbering, drawings |
 | `routes/luna.js` | The panel's LUNA Parts routes: dropdown lists, creating parts, renumbering, uploading files |
 | `lib/middleware.js` | Checks shared by the routes: logged in, opened inside Onshape, LUNA key set, `validate()` |
+| `lib/session-store.js` | Where logins are kept: Render Key Value when `REDIS_URL` is set, else memory |
 | `lib/schemas.js` | What each route accepts, as [zod](https://zod.dev) schemas, with the panel's error messages |
 | `lib/luna.js` | Calling the LUNA Parts API (key, paging, statuses) |
 | `lib/onshape/api.js` | Calling the Onshape API, counting calls, pausing after a 402 |
