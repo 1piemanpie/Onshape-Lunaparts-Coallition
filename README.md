@@ -73,7 +73,7 @@ code, in `.env.example`, or in chat.
 | `lib/twins.js` | Tells copies of a part from mirror images |
 | `public/index.html` | The panel itself (HTML, CSS and JavaScript in one file) |
 | `package.json`, `package-lock.json` | The packages the server needs, at exact versions |
-| `test/` | `npm test`: replays ~150 requests against fake Onshape and LUNA Parts and checks nothing changed |
+| `test/` | `npm test` (node:test): replays ~150 requests against fake Onshape and LUNA Parts and checks nothing changed |
 
 ## Running it on your own computer (optional)
 
@@ -92,7 +92,7 @@ happens on Render after a merge to `master`.
 fake Onshape and LUNA Parts answers, sends it every kind of request, and
 compares the answers (and every call the server tried to make) with the saved
 ones in `test/expected/`. If a change is meant to alter behaviour, check the
-differences it prints, then run `npm test -- --update` to save the new ones.
+differences it prints, then run `npm run test:update` to save the new ones. The tests use Node's built-in runner (`node:test`), so there is nothing extra to install.
 
 ## Deploying
 

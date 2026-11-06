@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node test/run.js"
+    "test": "node --test test/api.test.js",
+    "test:update": "node --test test/api.test.js"
   },
   "engines": {
     "node": ">=18"
