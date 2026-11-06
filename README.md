@@ -53,12 +53,22 @@ code, in `.env.example`, or in chat.
 
 | File | What it does |
 |---|---|
-| `server.js` | The Express server: Onshape login, Onshape and LUNA Parts routes |
+| `server.js` | Starts the Express server and wires the pieces below together |
+| `routes/auth.js` | Logging in with Onshape (OAuth) and `/api/session` |
+| `routes/onshape.js` | The panel's Onshape routes: parts list, clicks, shapes, pictures, twins, numbering, drawings |
+| `routes/luna.js` | The panel's LUNA Parts routes: dropdown lists, creating parts, renumbering, uploading files |
+| `lib/middleware.js` | Checks shared by the routes: logged in, opened inside Onshape, LUNA key set |
+| `lib/luna.js` | Calling the LUNA Parts API (key, paging, statuses) |
+| `lib/onshape/api.js` | Calling the Onshape API, counting calls, pausing after a 402 |
+| `lib/onshape/cache.js` | Caching Onshape answers by document version |
+| `lib/onshape/parts.js` | Parts: groups, block CAD, assemblies, sizes, mass properties |
+| `lib/onshape/title-block.js` | Filling a drawing's title block |
+| `lib/onshape/exports.js` | DXF, STEP and drawing PDF files |
+| `lib/drawings.js` | Makes the team's Onshape drawings |
+| `lib/detect.js` | Works out what a part is (plate, pocketed plate, box tube, shaft) |
+| `lib/dxf.js` | Builds DXF files from a part's flat face |
+| `lib/twins.js` | Tells copies of a part from mirror images |
 | `public/index.html` | The panel itself (HTML, CSS and JavaScript in one file) |
-| `drawings.js` | Makes the team's Onshape drawings and title blocks |
-| `detect.js` | Works out what a part is (plate, pocketed plate, box tube, shaft) |
-| `dxf.js` | Builds DXF files from a part's flat face |
-| `twins.js` | Tells copies of a part from mirror images |
 | `package.json`, `package-lock.json` | The packages the server needs, at exact versions |
 
 ## Running it on your own computer (optional)
