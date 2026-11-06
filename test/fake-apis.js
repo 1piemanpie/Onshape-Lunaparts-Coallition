@@ -101,11 +101,22 @@ globalThis.fetch = async (url, opts = {}) => {
       if (q.includes('/p/')) return json({ properties: [{ name: 'Name', propertyId: 'pName', value: 'x' }, { name: 'Part number', propertyId: 'pNum', value: '' }, { name: 'Title 1', propertyId: 'pT1', value: '' }, { name: 'Description', propertyId: 'pDesc', value: '' }] });
       return json({ properties: [{ name: 'Part number', propertyId: 'dNum', value: '' }] });
     }
-    if (q.endsWith('/translations') && method === 'POST') return json({ id: `T${++seq}`, requestState: 'DONE', resultExternalDataIds: [`X${seq}`] });
-    if (q.includes('/externaldata/')) return new Response(q.includes('X') && opts.headers && opts.headers.Accept === 'application/octet-stream' ? '{"sheets":[]}' : 'BYTES', { status: 200 });
+    // The document's existing drawing (26O-E001 Drawing 1) is an empty sheet.
+    if (q.endsWith('/translations') && method === 'POST') return json({ id: `T${++seq}`, requestState: 'DONE', resultExternalDataIds: [`${q.includes(`/e/${DRW}/`) ? 'XE' : 'X'}${seq}`] });
+    if (q.includes('/externaldata/')) {
+      const views = q.includes('XE') ? '[]' : '[{"viewId":"V1","logicalId":"auto_main","position":{"x":4,"y":4},"viewToPaperMatrix":[1,0,0,4,0,1,0,4,0,0,1,0]}]';
+      return new Response(q.includes('X') && opts.headers && opts.headers.Accept === 'application/octet-stream' ? `{"sheets":[{"views":${views}}]}` : 'BYTES', { status: 200 });
+    }
     if (q === '/users/sessioninfo') return json({ name: 'Test Student' });
-    if (q.startsWith('/drawings/') && method === 'POST' && q.endsWith('/create')) return json({ id: 'c'.repeat(23) + '9' });
+    // A drawing for 26O-E099 is one where Onshape refuses every view.
+    if (q.startsWith('/drawings/') && method === 'POST' && q.endsWith('/create')) {
+      return json({ id: 'c'.repeat(23) + (/^26O-E099/.test(JSON.parse(opts.body).drawingName) ? '8' : '9') });
+    }
+    if (q.startsWith('/drawings/') && q.includes('c'.repeat(23) + '8/modify') && method === 'POST') {
+      return json({ id: 'M2', requestState: 'DONE', output: JSON.stringify({ results: [{ status: 'Failed', errorDescription: 'Part not found' }] }) });
+    }
     if (q.startsWith('/drawings/') && q.includes('/modify') && method === 'POST') return json({ id: 'M1', requestState: 'DONE', results: [] });
+    if (q.startsWith('/elements/') && method === 'DELETE') return json({});
     if (q.startsWith('/drawings/modify/status')) return json({ requestState: 'DONE', output: '{}' });
     return json({ unknown: q }, 404);
   }
