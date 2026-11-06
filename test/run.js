@@ -41,7 +41,8 @@ async function waitForServer() {
       LUNA_PARTS_API_KEY: 'test-key',
       LUNA_PARTS_API_BASE: '',
       ONSHAPE_API_BASE: '',
-      REDIS_URL: '',
+      // npm test uses memory sessions; TEST_REDIS_URL runs it against a real Key Value / Redis.
+      REDIS_URL: process.env.TEST_REDIS_URL || '',
     },
     // The server's own log is noisy here (the bad-input requests log errors on purpose).
     stdio: 'ignore',
