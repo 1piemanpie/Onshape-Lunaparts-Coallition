@@ -473,7 +473,7 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
         titleWarnings.push(`Couldn't fill the title block's title from the part (${err.status || err.message}).`);
       }
     } else {
-      titleWarnings.push('This part is linked from another document, so the title block\'s title stays empty.');
+      titleWarnings.push('This part is linked from another document, so Onshape won\'t let its title box be filled. Its name is in the notes instead.');
     }
 
     const result = await makeDrawing({
@@ -485,6 +485,7 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
       name,
       partNumber,
       partName,
+      linked: !local,
       qty,
       material,
       exportJson: async (drawingEid) => JSON.parse(String(await runTranslation(req,
