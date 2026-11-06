@@ -2343,7 +2343,7 @@
       if (!match || stagedFor(match.partId)) continue;
       s.partId = match.partId;
       s.onshape.partId = match.partId;
-      if (s.drawing.state === 'failed') s.drawing = { state: 'making' };
+      if (s.drawing.state === 'failed') s.drawing = { state: 'making', check: true };
     }
     for (const s of state.staged) {
       // Numbers handed out to linked parts stay taken.
@@ -2356,7 +2356,10 @@
       }
       // A drawing that was being made when the panel closed: ask again. The
       // server finds the one it already made (or is making) instead of making two.
-      if (s.drawing.state === 'making') queueDrawing(s.partId);
+      if (s.drawing.state === 'making') {
+        s.drawing.check = true;
+        queueDrawing(s.partId);
+      }
     }
     log(`${state.staged.length} saved part${state.staged.length === 1 ? '' : 's'} waiting for the drawing check.`);
   }
@@ -2510,6 +2513,7 @@
           partName: entry.part.name,
           quantity: Number(entry.part.quantity) || 1,
           material: entry.part.material,
+          check: Boolean(entry.drawing.check),
         });
         // Look it up again: it may have been saved again or removed meanwhile.
         const now = stagedFor(partId);
@@ -2636,7 +2640,7 @@
         retry.className = 'see';
         retry.textContent = 'RETRY';
         retry.addEventListener('click', () => {
-          s.drawing = { state: 'making' };
+          s.drawing = { state: 'making', check: true };
           queueDrawing(s.partId);
           saveStaged();
         });
@@ -2973,12 +2977,12 @@
     return run;
   }
 
-  async function requestDrawing(part, { partNumber, partName, quantity, material }) {
+  async function requestDrawing(part, { partNumber, partName, quantity, material, check }) {
     try {
       const body = await getJson('/api/onshape/make-drawing', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ partId: part.partId, partNumber, partName, quantity, material }),
+        body: JSON.stringify({ partId: part.partId, partNumber, partName, quantity, material, check }),
       });
       if (body.existing) log(`${partNumber} already has a drawing (${body.name}), so that one is used.`);
       else log(`Made ${body.name} in Onshape (${body.plan.type}, scale ${body.plan.scale.join(':')}${body.calls ? `, ${body.calls} Onshape calls` : ''}).`, 'success');

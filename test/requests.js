@@ -88,6 +88,8 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/onshape/make-drawing', { partId: 'JHD', partNumber: '26O-E001', partName: 'Plate', quantity: 2, material: '6061' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '26O-E003', partName: '  Side   plate ', quantity: '99999', material: 'x' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '26O-E099', partName: 'No views' }],
+    ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '26O-E003', check: true }],
+    ['POST', '/api/onshape/make-drawing', { partId: 'JHD', partNumber: '26O-E001', partName: 'Plate', check: true }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'bad id', partNumber: '1' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: 'x'.repeat(81) }],
