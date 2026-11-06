@@ -502,9 +502,9 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
         console.error('Filling part properties failed:', err.message);
         titleWarnings.push(`Couldn't fill the title block's title from the part (${err.status || err.message}).`);
       }
-    } else {
-      titleWarnings.push('This part is linked from another document, so Onshape won\'t let its title box be filled. Its name is in the notes instead.');
     }
+    // A linked part's own properties can't be changed, so its name box is
+    // filled from the drawing tab's Title 1 instead (fillDrawingNumber below).
 
     const result = await makeDrawing({
       api: (path, options) => onshapeFetch(req, path, options),
@@ -515,7 +515,6 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
       name,
       partNumber,
       partName,
-      linked: !local,
       qty,
       material,
       exportJson: drawingJson(req, ctx),
@@ -535,7 +534,7 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
     }
     // The drawing tab exists now, so its own number can be set.
     try {
-      await fillDrawingNumber(req, ctx, result.drawingId, partNumber, { isNew: true });
+      await fillDrawingNumber(req, ctx, result.drawingId, partNumber, { isNew: true, name: partName });
     } catch (err) {
       console.error('Filling the drawing number failed:', err.message);
       titleWarnings.push(`Couldn't fill the title block's drawing number (${err.status || err.message}).`);
