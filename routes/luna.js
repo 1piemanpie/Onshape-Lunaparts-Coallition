@@ -2,28 +2,17 @@
 // creating parts, renumbering them, and uploading their files.
 
 const express = require('express');
-const { ONSHAPE_ID, onshapeErrorMessage } = require('../lib/onshape/api');
+const { onshapeErrorMessage } = require('../lib/onshape/api');
 const {
   isLocalSource, ONSHAPE_TAG, linkedPartKey, getAssemblyParts, resolvePart, partShape, onshapeUserName,
 } = require('../lib/onshape/parts');
 const { safeFileName, buildDxf, exportStep, exportDrawingPdf } = require('../lib/onshape/exports');
 const { lunaRequest, lunaGetAll, attachmentExtension, getStatuses } = require('../lib/luna');
 const { REAM_UNDERSIZE_IN } = require('../lib/dxf');
-const { requireLogin, requirePanel, requireLunaKey } = require('../lib/middleware');
+const { requireLogin, requirePanel, requireLunaKey, validate } = require('../lib/middleware');
+const schemas = require('../lib/schemas');
 
 const router = express.Router();
-
-// Creates the part in LUNA Parts. This writes to the team's real tracker,
-// so it refuses to create a second part with the same part number in the
-// same project (updating an existing part is a separate, later step).
-const PART_TYPES = ['part', 'assembly', 'purchased'];
-
-function optionalNumber(value, { integer = false } = {}) {
-  if (value === undefined || value === null || value === '') return null;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n))) return NaN;
-  return n;
-}
 
 // Read-only: fetches the lists the panel needs for its dropdowns. Requires
 // an Onshape login so the team's project list isn't public on this URL.
@@ -82,9 +71,8 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
 // For UPDATE FILES on a part that's already in LUNA: its LUNA id, the next
 // revision number, and which kinds of files it has, so the same kinds are
 // sent again. LUNA calls only (no Onshape calls).
-router.get('/api/luna/part-files', requireLogin, async (req, res) => {
-  const number = String(req.query.number || '').trim().toUpperCase();
-  if (!number || number.length > 80) return res.status(400).json({ error: 'Which part?' });
+router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partFilesQuery), async (req, res) => {
+  const { number } = req.input;
   try {
     const parts = await lunaGetAll('parts');
     const part = parts.find((p) => String(p.part_number || '').trim().toUpperCase() === number);
@@ -109,10 +97,8 @@ router.get('/api/luna/part-files', requireLogin, async (req, res) => {
 // else, cached by document version), 0 per part. LUNA cost: the parts and
 // tools lists once, plus one attachments list per part.
 const NO_DXF_TOOLS = /lathe|saw|print|3d/i;
-router.post('/api/luna/dxf-check', requireLogin, requirePanel, async (req, res) => {
-  const asked = (Array.isArray((req.body || {}).parts) ? req.body.parts : [])
-    .filter((p) => p && /^[\x21-\x7E]{1,128}$/.test(String(p.partId || '')) && String(p.number || '').trim())
-    .slice(0, 200);
+router.post('/api/luna/dxf-check', requireLogin, requirePanel, validate('body', schemas.dxfCheckBody), async (req, res) => {
+  const asked = req.input.parts;
   try {
     const [lunaParts, tools] = await Promise.all([lunaGetAll('parts'), lunaGetAll('tools')]);
     const byNumber = new Map(lunaParts.map((p) => [String(p.part_number || '').trim().toUpperCase(), p]));
@@ -122,8 +108,8 @@ router.post('/api/luna/dxf-check', requireLogin, requirePanel, async (req, res) 
     const worker = async () => {
       while (next < asked.length) {
         const ask = asked[next++];
-        const number = String(ask.number).trim().toUpperCase();
-        const out = { partId: String(ask.partId), number, missing: false, why: '' };
+        const { number } = ask;
+        const out = { partId: ask.partId, number, missing: false, why: '' };
         results.push(out);
         try {
           const lunaPart = byNumber.get(number);
@@ -162,11 +148,9 @@ router.post('/api/luna/dxf-check', requireLogin, requirePanel, async (req, res) 
 // UPDATE FILES on a part renamed in Onshape after upload (E018 -> 26O-E018):
 // gives the LUNA part the new number too. LUNA's edit needs the required
 // fields sent back, so the part is read first.
-router.post('/api/luna/parts/:id/number', requireLogin, async (req, res) => {
-  const id = optionalNumber(req.params.id, { integer: true });
-  const number = String((req.body || {}).partNumber || '').trim();
-  if (!id) return res.status(400).json({ error: 'Invalid LUNA part.' });
-  if (!number || number.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
+router.post('/api/luna/parts/:id/number', requireLogin,
+  validate('params', schemas.lunaIdParams), validate('body', schemas.renumberBody), async (req, res) => {
+  const { id, partNumber: number } = req.input;
   try {
     const got = await lunaRequest(`parts/${id}`);
     if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
@@ -197,12 +181,8 @@ router.post('/api/luna/parts/:id/number', requireLogin, async (req, res) => {
 // Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
 // The API mentions a project_id filter without documenting it, so we pass
 // it and also filter here in case it's ignored.
-router.get('/api/luna/assemblies', requireLogin, async (req, res) => {
-  const projectId = Number(req.query.project_id);
-  if (!Number.isInteger(projectId) || projectId <= 0) {
-    return res.status(400).json({ error: 'project_id is required.' });
-  }
-
+router.get('/api/luna/assemblies', requireLogin, validate('query', schemas.projectQuery), async (req, res) => {
+  const projectId = req.input.project_id;
   try {
     const parts = await lunaGetAll(`parts?project_id=${projectId}`);
     res.json({
@@ -217,7 +197,6 @@ router.get('/api/luna/assemblies', requireLogin, async (req, res) => {
 });
 
 router.get('/api/luna/statuses', requireLogin, async (req, res) => {
-
   try {
     res.json({ statuses: await getStatuses() });
   } catch (err) {
@@ -226,36 +205,27 @@ router.get('/api/luna/statuses', requireLogin, async (req, res) => {
   }
 });
 
-router.post('/api/luna/parts', requireLogin, async (req, res) => {
-
-  const b = req.body || {};
+// Creates the part in LUNA Parts. This writes to the team's real tracker,
+// so it refuses to create a second part with the same part number in the
+// same project (updating an existing part is a separate, later step).
+router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPartBody), async (req, res) => {
+  const b = req.input;
   const fields = {
-    project_id: optionalNumber(b.projectId, { integer: true }),
-    name: String(b.name || '').trim(),
-    part_number: String(b.partNumber || '').trim(),
-    part_status_id: optionalNumber(b.statusId, { integer: true }),
+    project_id: b.projectId,
+    name: b.name,
+    part_number: b.partNumber,
+    part_status_id: b.statusId,
     type: b.type,
-    quantity: optionalNumber(b.quantity, { integer: true }),
-    tool_id: optionalNumber(b.toolId, { integer: true }),
-    priority: optionalNumber(b.priority, { integer: true }),
-    parent_part_id: optionalNumber(b.parentPartId, { integer: true }),
-    material: String(b.material || '').trim(),
-    material_thickness_id: optionalNumber(b.thicknessId, { integer: true }),
-    cut_length: optionalNumber(b.cutLength),
-    lead_time_days: optionalNumber(b.leadTimeDays, { integer: true }),
-    description: String(b.description || '').trim(),
+    quantity: b.quantity,
+    tool_id: b.toolId,
+    priority: b.priority,
+    parent_part_id: b.parentPartId,
+    material: b.material,
+    material_thickness_id: b.thicknessId,
+    cut_length: b.cutLength,
+    lead_time_days: b.leadTimeDays,
+    description: b.description,
   };
-
-  const problems = [];
-  if (!fields.project_id) problems.push('Choose a project.');
-  if (!fields.name) problems.push('Enter a name.');
-  if (!fields.part_status_id) problems.push('Choose a status.');
-  if (!PART_TYPES.includes(fields.type)) problems.push('Choose a type.');
-  if (fields.quantity === null || Number.isNaN(fields.quantity)) problems.push('Quantity must be a whole number.');
-  for (const key of ['tool_id', 'priority', 'parent_part_id', 'material_thickness_id', 'cut_length', 'lead_time_days']) {
-    if (Number.isNaN(fields[key])) problems.push(`${key.replace(/_/g, ' ')} isn't a valid number.`);
-  }
-  if (problems.length) return res.status(400).json({ error: problems.join(' ') });
 
   // Everyone uploads through the panel's one LUNA key, so the notes say
   // which Onshape user made the part.
@@ -263,7 +233,7 @@ router.post('/api/luna/parts', requireLogin, async (req, res) => {
   const notes = who ? [`Uploaded by ${who} (Onshape, via Luna Parts Bridge)`] : [];
 
   // A linked assembly part gets the tag that ties its LUNA number to it.
-  const panelPartId = String(b.onshapePartId || '');
+  const panelPartId = b.onshapePartId;
   if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
     try {
       const list = await getAssemblyParts(req, { reuse: true });
@@ -325,30 +295,14 @@ router.post('/api/luna/parts', requireLogin, async (req, res) => {
 // is enough; nothing is saved back into the document), and upload both to
 // the LUNA part's attachments. One failing doesn't stop the other.
 
-router.post('/api/luna/parts/:id/attachments', requirePanel, async (req, res) => {
+router.post('/api/luna/parts/:id/attachments', requirePanel,
+  validate('params', schemas.lunaIdParams), validate('body', schemas.attachmentsBody), async (req, res) => {
   const ctx = req.session.onshapeContext;
-
-  const lunaPartId = optionalNumber(req.params.id, { integer: true });
-  const b = req.body || {};
-  const partId = String(b.partId || '');
-  const faceId = b.faceId ? String(b.faceId) : null;
-  const drawingId = b.drawingId ? String(b.drawingId) : null;
-  // DXFs are only for parts cut on the CNC; the panel decides from the Machine.
-  const wantDxf = b.wantDxf !== false;
-  const wantStep = b.wantStep === true;
-  // UPDATE FILES sends the files again as the next revision.
-  const revision = optionalNumber(b.revision, { integer: true });
-  const fileBase = safeFileName(b.partNumber);
-  // Box tube with holes to mill: one DXF per side (auto-detect), e.g.
-  // "26O-E003 top side.dxf". A face the user picked wins over these.
-  const dxfSides = (Array.isArray(b.dxfSides) ? b.dxfSides : [])
-    .filter((d) => d && /^[\x21-\x7E]{1,128}$/.test(String(d.faceId || '')) && /^[a-z]{2,10}$/.test(String(d.side || '')))
-    .slice(0, 6);
-  if (!lunaPartId) return res.status(400).json({ error: 'Invalid LUNA part.' });
-  if (!/^[\x21-\x7E]{1,128}$/.test(partId) || (faceId && !/^[\x21-\x7E]{1,128}$/.test(faceId))) {
-    return res.status(400).json({ error: 'Click the part in Onshape first.' });
-  }
-  if (drawingId && !ONSHAPE_ID.test(drawingId)) return res.status(400).json({ error: 'Invalid drawing.' });
+  const {
+    id: lunaPartId, partId, faceId, drawingId, wantDxf, wantStep, revision, dxfSides,
+  } = req.input;
+  const fileBase = safeFileName(req.input.partNumber);
+  // A face the user picked wins over the auto-detected tube sides.
 
   const files = [];
   const notes = [];

@@ -17,7 +17,8 @@ const { lunaGetAll } = require('../lib/luna');
 const { isPlanar } = require('../lib/dxf');
 const { compareBodies } = require('../lib/twins');
 const { makeDrawing } = require('../lib/drawings');
-const { requireLogin, requirePanel } = require('../lib/middleware');
+const { requireLogin, requirePanel, validate } = require('../lib/middleware');
+const schemas = require('../lib/schemas');
 
 const router = express.Router();
 
@@ -27,9 +28,8 @@ router.get('/api/usage', requireLogin, (req, res) => {
   res.json({ since: usage.since, total: usage.total, byAction: Object.fromEntries(byAction) });
 });
 
-router.get('/api/onshape/part-shape', requirePanel, async (req, res) => {
-  const partId = String(req.query.partId || '');
-  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+router.get('/api/onshape/part-shape', requirePanel, validate('query', schemas.partIdQuery), async (req, res) => {
+  const { partId } = req.input;
 
   try {
     res.json(await partShape(req, partId));
@@ -44,9 +44,8 @@ router.get('/api/onshape/part-shape', requirePanel, async (req, res) => {
 // inside an assembly from an app; trying froze the feature list, PR #20).
 const partImages = new Map();
 const PART_IMAGE_MAX_AGE_MS = PART_CACHE_MAX_AGE_MS;
-router.get('/api/onshape/part-image', requirePanel, async (req, res) => {
-  const partId = String(req.query.partId || '');
-  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
+router.get('/api/onshape/part-image', requirePanel, validate('query', schemas.partIdQuery), async (req, res) => {
+  const { partId } = req.input;
 
   try {
     const { source, partId: sourcePartId } = await resolvePart(req, partId);
@@ -74,9 +73,8 @@ router.get('/api/onshape/part-image', requirePanel, async (req, res) => {
 });
 
 // Twins: parts with the same shape (see partMassProps and twins.js).
-router.post('/api/onshape/twins', requirePanel, async (req, res) => {
-  const ids = (Array.isArray(req.body && req.body.partIds) ? req.body.partIds : [])
-    .map(String).filter((id) => /^[\x21-\x7E]{1,128}$/.test(id)).slice(0, 500);
+router.post('/api/onshape/twins', requirePanel, validate('body', schemas.twinsBody), async (req, res) => {
+  const ids = req.input.partIds;
 
   try {
     const resolved = [];
@@ -201,16 +199,9 @@ router.get('/api/onshape/parts', requirePanel, async (req, res) => {
   }
 });
 
-router.get('/api/onshape/selected-part', requirePanel, async (req, res) => {
+router.get('/api/onshape/selected-part', requirePanel, validate('query', schemas.selectionQuery), async (req, res) => {
   const dwe = req.dwe;
-
-  const selectionId = String(req.query.selectionId || '');
-  // Onshape IDs use a base64-like alphabet ("S8O+D", "JH/"), so allow any
-  // visible ASCII. The ID is only compared and sent in a JSON body, never put
-  // in a URL path.
-  if (!/^[\x21-\x7E]{1,128}$/.test(selectionId)) {
-    return res.status(400).json({ error: 'Invalid selection.' });
-  }
+  const { selectionId } = req.input;
 
   try {
     // Clicks in an assembly name occurrences, not Part Studio faces; the
@@ -267,11 +258,9 @@ router.get('/api/onshape/selected-part', requirePanel, async (req, res) => {
 // "Assign names": each part clicked in the Part Studio is renamed to the next
 // number in a series like 26O-E001. Renaming changes the document, so it
 // needs the app's "edit" (OAuth2Write) permission.
-const NAME_PREFIX = /^[A-Za-z0-9][A-Za-z0-9-]{0,15}$/;
 // Onshape's "Name" property has the same ID on every part, so it's looked up
 // once (one extra call) and then each rename is a single call.
 let namePropertyId = null;
-const PART_NAME = /^[\w .\-()#/]{1,80}$/;
 
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -279,14 +268,11 @@ function escapeRegExp(text) {
 
 // The next free number after the highest one already used, in this Part
 // Studio or (when a project is picked) in LUNA Parts.
-router.get('/api/onshape/next-number', requirePanel, async (req, res) => {
+router.get('/api/onshape/next-number', requirePanel, validate('query', schemas.nextNumberQuery), async (req, res) => {
   const dwe = req.dwe;
-  const prefix = String(req.query.prefix || '');
-  if (!NAME_PREFIX.test(prefix)) return res.status(400).json({ error: 'Use letters, numbers and dashes for the prefix, like 26O-E.' });
-  const projectId = Number(req.query.project_id);
-
+  const { prefix, project_id: projectId } = req.input;
   // Parts about to be renumbered don't hold on to their old numbers.
-  const exclude = new Set(String(req.query.exclude || '').split(',').filter(Boolean).slice(0, 1000));
+  const exclude = new Set(req.input.exclude);
 
   const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\b`, 'i');
   const numbers = [];
@@ -305,7 +291,7 @@ router.get('/api/onshape/next-number', requirePanel, async (req, res) => {
     return res.status(502).json({ error: onshapeErrorMessage(err) });
   }
   let checkedLuna = false;
-  if (Number.isInteger(projectId) && projectId > 0) {
+  if (projectId) {
     try {
       const parts = await lunaGetAll(`parts?project_id=${projectId}`);
       for (const part of parts) {
@@ -320,13 +306,10 @@ router.get('/api/onshape/next-number', requirePanel, async (req, res) => {
   res.json({ next: (numbers.length ? Math.max(...numbers) : 0) + 1, checkedLuna, lunaHighest });
 });
 
-router.post('/api/onshape/rename', requirePanel, async (req, res) => {
+router.post('/api/onshape/rename', requirePanel, validate('body', schemas.renameBody), async (req, res) => {
   const ctx = req.session.onshapeContext;
   const dwe = req.dwe;
-  const partId = String((req.body && req.body.partId) || '');
-  const name = String((req.body && req.body.name) || '').trim();
-  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
-  if (!PART_NAME.test(name)) return res.status(400).json({ error: 'That name has characters Onshape parts can\'t use here.' });
+  const { partId, name } = req.input;
 
   try {
     // In an assembly, rename the part in its own Part Studio. That only works
@@ -417,19 +400,12 @@ router.get('/api/onshape/drawings', requirePanel, async (req, res) => {
 // the first one instead of making a second drawing.
 const drawingsInFlight = new Map();
 
-router.post('/api/onshape/make-drawing', requirePanel, async (req, res) => {
+router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.makeDrawingBody), async (req, res) => {
   const ctx = req.session.onshapeContext;
-  const b = req.body || {};
-  const partId = String(b.partId || '');
-  const partNumber = String(b.partNumber || '').trim();
-  const qty = Math.max(1, Math.min(9999, parseInt(b.quantity, 10) || 1));
-  const material = String(b.material || '').slice(0, 80);
-  const partName = String(b.partName || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-  if (!/^[\x21-\x7E]{1,128}$/.test(partId)) return res.status(400).json({ error: 'Invalid part.' });
-  if (!partNumber || partNumber.length > 80) return res.status(400).json({ error: 'Give the part a number first.' });
+  const { partId, partNumber, quantity: qty, material, partName, force } = req.input;
 
   const flightKey = `${ctx.documentId}:${partNumber.split(/\s+/)[0].toUpperCase()}`;
-  const running = !b.force && drawingsInFlight.get(flightKey);
+  const running = !force && drawingsInFlight.get(flightKey);
   if (running) {
     try {
       const made = await running;
@@ -465,7 +441,7 @@ router.post('/api/onshape/make-drawing', requirePanel, async (req, res) => {
       || (e.elementType === 'APPLICATION' && /drawing/i.test(e.dataType || '')));
     const key = partNumber.split(/\s+/)[0].toUpperCase();
     const existing = drawings.find((e) => String(e.name || '').split(/\s+/)[0].toUpperCase() === key);
-    if (existing && !b.force) {
+    if (existing && !force) {
       // The title block reads the part's properties live, so filling them
       // also fixes a drawing made before they were filled.
       const warnings = await fillTitleBlock(req, ctx, {
