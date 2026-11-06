@@ -2516,7 +2516,7 @@
         if (now && now.drawing.state === 'making') {
           now.drawing = made && !made.failed
             ? { state: 'ready', id: made.drawingId, name: made.name, existing: Boolean(made.existing),
-              needsCheck: Boolean(made.needsCheck), warnings: (made.warnings || []).slice(0, 5),
+              needsCheck: Boolean(made.needsCheck), viewsMissing: Boolean(made.viewsMissing), warnings: (made.warnings || []).slice(0, 5),
               // What the title block was filled with, to spot later edits.
               madeWith: made.existing ? null : { number: entry.number, name: entry.part.name, quantity: String(entry.part.quantity), material: entry.part.material } }
             : { state: 'failed', error: (made && made.error) || 'Unknown problem' };
@@ -2589,7 +2589,7 @@
         draw.textContent = drawingQueue.includes(s.partId) ? 'Drawing waiting its turn…' : 'Making the drawing in Onshape…';
       } else if (d.state === 'ready') {
         draw.className = d.needsCheck ? 'part-sub bad' : 'part-sub good';
-        draw.textContent = `${d.name}${d.existing ? ' (already there)' : ''}${d.needsCheck ? ' · labels may overlap, check closely' : ''}`;
+        draw.textContent = `${d.name}${d.existing ? ' (already there)' : ''}${d.viewsMissing ? ' · no views found, OPEN it and check the part is shown' : d.needsCheck ? ' · labels may overlap, check closely' : ''}`;
       } else if (d.state === 'failed') {
         draw.className = 'part-sub bad';
         draw.textContent = `Drawing failed: ${d.error}`;
