@@ -149,8 +149,7 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9 {"properties":[{"propertyId":"dNum","value":"26O-E041"},{"propertyId":"dT1","value":"Side"}]}
 GET cad.onshape.com/api/users/sessioninfo 
 GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
-POST build.lunatecs.org/api/v1/parts project_id=5&name=Linked shaft&part_number=26O-E060&part_status_id=1&type=part&quantity=1&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
-[onshape:dddddddddddddddddddddddd|111111111111111111111111|333333333333333333333333|JFD|]
+POST build.lunatecs.org/api/v1/parts project_id=5&name=Linked shaft&part_number=26O-E060&part_status_id=1&type=part&quantity=1&external_ref=onshape:dddddddddddddddddddddddd|111111111111111111111111|333333333333333333333333|JFD|&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
 POST cad.onshape.com/api/partstudios/d/111111111111111111111111/v/222222222222222222222222/e/333333333333333333333333/translations {"formatName":"STEP","storeInDocument":false,"partIds":"JFD","destinationName":"26O-E007","linkDocumentId":"dddddddddddddddddddddddd"}
 GET cad.onshape.com/api/documents/d/111111111111111111111111/externaldata/X10?linkDocumentId=dddddddddddddddddddddddd 
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 26O-E007.dxf 433>&files[]=<file 26O-E007.step 135>
