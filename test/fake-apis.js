@@ -42,6 +42,7 @@ const partsList = [
 const lunaParts = [
   { id: 11, project_id: 5, name: 'Plate', part_number: '26O-E001', part_status_id: 1, type: 'part', quantity: 1, tool_id: 2, notes: '', updated_at: '2026-11-01T00:00:00Z' },
   { id: 12, project_id: 5, name: 'Shaft', part_number: '26O-E007', part_status_id: 2, type: 'part', quantity: 2, tool_id: 3, notes: `[onshape:${D}|${LD}|${LE}|JFD|]` },
+  { id: 14, project_id: 5, name: 'Spacer', part_number: '26O-E008', part_status_id: 1, type: 'part', quantity: 4, notes: '', external_ref: `onshape:${D}|${LD}|${LE}|JGD|` },
   { id: 13, project_id: 5, name: 'Elevator', part_number: '26O-E100', part_status_id: 1, type: 'assembly', quantity: 1, status: { id: 1, name: 'Design' } },
 ];
 

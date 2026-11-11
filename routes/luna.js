@@ -16,6 +16,9 @@ const schemas = require('../lib/schemas');
 
 const router = express.Router();
 
+// LUNA's external_ref for a part linked from another Onshape document.
+const EXTERNAL_REF = /^onshape:(\S{1,392})$/;
+
 // Read-only: fetches the lists the panel needs for its dropdowns. Requires
 // an Onshape login so the team's project list isn't public on this URL.
 router.get('/api/luna/options', requireLogin, requireLunaKey, async (req, res) => {
@@ -39,6 +42,12 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
   try {
     const parts = await getParts();
     const linked = {};
+    // external_ref first; the notes tag only for parts made before it existed.
+    for (const p of parts) {
+      const m = String(p.external_ref || '').match(EXTERNAL_REF);
+      const number = String(p.part_number || '').trim();
+      if (m && number && !linked[m[1]]) linked[m[1]] = number;
+    }
     for (const p of parts) {
       const m = String(p.notes || '').match(ONSHAPE_TAG);
       const number = String(p.part_number || '').trim();
@@ -216,7 +225,9 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
   const who = await onshapeUserName(req);
   const notes = who ? [`Uploaded by ${who} (Onshape, via Luna Parts Bridge)`] : [];
 
-  // A linked assembly part gets the tag that ties its LUNA number to it.
+  // A linked assembly part gets LUNA's external_ref ("onshape:<key>"), which
+  // ties its LUNA number to it. (Parts made before LUNA had external_ref
+  // carry the same key as an [onshape:...] tag in their notes instead.)
   const panelPartId = b.onshapePartId;
   if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
     try {
@@ -224,7 +235,13 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
       const part = list.byId.get(panelPartId);
       const ctx = req.session.onshapeContext;
       const key = part && !isLocalSource(ctx, part.source) && linkedPartKey(ctx, part.source, part.partId);
-      if (key) notes.push(`[onshape:${key}]`);
+      if (key) {
+        const ref = `onshape:${key}`;
+        // LUNA allows 400 characters; a key that long (only with a very long
+        // configuration) falls back to the old notes tag.
+        if (ref.length <= 400) fields.external_ref = ref;
+        else notes.push(`[onshape:${key}]`);
+      }
     } catch (err) {
       console.error('Linked part lookup failed:', err.message);
     }
