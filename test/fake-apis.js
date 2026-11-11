@@ -123,6 +123,15 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.host === 'build.lunatecs.org') {
     const q = p.replace('/api/v1', '');
     const page = (data) => json({ data, next_page_url: null });
+    // GET /options: every dropdown list at once (LUNA build 0.3.79 and later).
+    if (q === '/options') {
+      return json({
+        projects: [{ id: 5, name: 'Offseason', part_number_prefix: '26O-E', completed_at: null }, { id: 6, name: 'Old', completed_at: '2025' }],
+        tools: [{ id: 3, name: 'Lathe', is_active: true, order: 2 }, { id: 2, name: 'CNC Router', is_active: true, order: 1 }, { id: 4, name: 'Old', is_active: false, order: 0 }],
+        material_thicknesses: [{ id: 8, name: '1/4', order: 2 }, { id: 7, name: '1/8', order: 1 }],
+        part_statuses: [{ id: 2, name: 'Designed', order: 2 }, { id: 1, name: 'Design', order: 1 }, { id: 9, name: 'Unused yet', order: 3 }],
+      });
+    }
     if (q === '/projects') return page([{ id: 5, name: 'Offseason', part_number_prefix: '26O-E' }, { id: 6, name: 'Old', completed_at: '2025' }]);
     if (q === '/tools') return page([{ id: 3, name: 'Lathe', is_active: true, order: 2 }, { id: 2, name: 'CNC Router', is_active: true, order: 1 }, { id: 4, name: 'Old', is_active: false, order: 0 }]);
     if (q === '/material-thicknesses') return page([{ id: 8, name: '1/4', order: 2 }, { id: 7, name: '1/8', order: 1 }]);
