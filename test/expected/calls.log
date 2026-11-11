@@ -10,8 +10,8 @@ POST cad.onshape.com/api/partstudios/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaa
 GET cad.onshape.com/api/parts/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/partid/NOPE/boundingboxes 
 GET cad.onshape.com/api/parts/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/partid/JHD/shadedviews?viewMatrix=isometric&outputHeight=200&outputWidth=200&pixelSize=0&edges=show&useAntiAliasing=true 
 GET cad.onshape.com/api/partstudios/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/massproperties?massAsGroup=false 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/p/JHH 
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/p/JHH {"jsonType":"metadata-part","partId":"JHH","properties":[{"propertyId":"pName","value":"26O-E002"}]}
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/p/JHH {"jsonType":"metadata-part","partId":"JHH","properties":[{"propertyId":"pName","value":"26O-E003"}]}
@@ -58,28 +58,28 @@ GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9 {"properties":[{"propertyId":"dNum","value":"26O-E001"},{"propertyId":"dT1","value":"Plate"}]}
 GET build.lunatecs.org/api/v1/options 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/parts/11/attachments 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/parts/12/attachments 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/tools 
-GET build.lunatecs.org/api/v1/parts/11/attachments 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/tools 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts/11/attachments?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts/12/attachments?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts/11/attachments?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
 GET build.lunatecs.org/api/v1/parts/11 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 PUT build.lunatecs.org/api/v1/parts/11 {"part_number":"26O-E011","name":"Plate","part_status_id":1,"tool_id":2,"type":"part","notes":"","quantity":1}
 GET build.lunatecs.org/api/v1/parts/11 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET build.lunatecs.org/api/v1/parts/77 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET cad.onshape.com/api/users/sessioninfo 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 POST build.lunatecs.org/api/v1/parts project_id=5&name=New plate&part_number=26O-E050&part_status_id=1&type=part&quantity=2&tool_id=2&priority=1&material=6061&material_thickness_id=7&cut_length=1.5&description=d&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 POST build.lunatecs.org/api/v1/parts project_id=5&name=bad&part_status_id=1&type=part&quantity=1&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
 POST build.lunatecs.org/api/v1/parts project_id=5&name=NoNum&part_status_id=1&type=purchased&quantity=3&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
 POST build.lunatecs.org/api/v1/parts project_id=1&name=a&part_status_id=3&type=part&quantity=4&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
@@ -115,8 +115,8 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9 {"properties":[{"propertyId":"dNum","value":"26O-E071"}]}
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file R.dxf 433>
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 5.dxf 433>&revision=2&description=Updated from Onshape
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/tools 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
 POST oauth.onshape.com/oauth/token grant_type=authorization_code&code=abc&client_id=test-client&client_secret=test-secret&redirect_uri=https%3A%2F%2F127.0.0.1%3A3999%2Foauth%2Fcallback
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/currentmicroversion 
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/elements 
@@ -148,12 +148,12 @@ GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9 {"properties":[{"propertyId":"dNum","value":"26O-E041"},{"propertyId":"dT1","value":"Side"}]}
 GET cad.onshape.com/api/users/sessioninfo 
-GET build.lunatecs.org/api/v1/parts?project_id=5 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 POST build.lunatecs.org/api/v1/parts project_id=5&name=Linked shaft&part_number=26O-E060&part_status_id=1&type=part&quantity=1&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
 [onshape:dddddddddddddddddddddddd|111111111111111111111111|333333333333333333333333|JFD|]
 POST cad.onshape.com/api/partstudios/d/111111111111111111111111/v/222222222222222222222222/e/333333333333333333333333/translations {"formatName":"STEP","storeInDocument":false,"partIds":"JFD","destinationName":"26O-E007","linkDocumentId":"dddddddddddddddddddddddd"}
 GET cad.onshape.com/api/documents/d/111111111111111111111111/externaldata/X10?linkDocumentId=dddddddddddddddddddddddd 
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 26O-E007.dxf 433>&files[]=<file 26O-E007.step 135>
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/tools 
-GET build.lunatecs.org/api/v1/parts/11/attachments 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts/11/attachments?per_page=100&page=1 

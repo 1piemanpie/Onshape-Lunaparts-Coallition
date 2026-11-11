@@ -13,7 +13,7 @@ const {
 } = require('../lib/onshape/parts');
 const { fillPartProperties, fillDrawingNumber, filledTitleBlocks, fillTitleBlock } = require('../lib/onshape/title-block');
 const { runTranslation } = require('../lib/onshape/exports');
-const { lunaGetAll } = require('../lib/luna');
+const { getProjectParts } = require('../lib/luna');
 const { isPlanar } = require('../lib/dxf');
 const { compareBodies } = require('../lib/twins');
 const { makeDrawing, hasViews, deleteDrawingTab } = require('../lib/drawings');
@@ -293,7 +293,7 @@ router.get('/api/onshape/next-number', requirePanel, validate('query', schemas.n
   let checkedLuna = false;
   if (projectId) {
     try {
-      const parts = await lunaGetAll(`parts?project_id=${projectId}`);
+      const parts = await getProjectParts(projectId);
       for (const part of parts) {
         const m = String(part.part_number || '').match(pattern);
         if (m) { numbers.push(Number(m[1])); lunaHighest = Math.max(lunaHighest, Number(m[1])); }
