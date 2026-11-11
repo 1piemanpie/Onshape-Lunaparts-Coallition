@@ -63,6 +63,9 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
   }
 });
 
+// Team rule: a part whose machine is CNC (or mill/router, but not a lathe) needs a DXF.
+const isCncTool = (name) => /cnc|mill|router/i.test(name || '') && !/lathe/i.test(name || '');
+
 // For UPDATE FILES on a part that's already in LUNA: its LUNA id, the next
 // revision number, and which kinds of files it has, so the same kinds are
 // sent again. LUNA calls only (no Onshape calls).
@@ -72,13 +75,16 @@ router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partF
     const parts = await getParts();
     const part = parts.find((p) => String(p.part_number || '').trim().toUpperCase() === number);
     if (!part) return res.status(404).json({ error: `${number} isn't in LUNA Parts.` });
-    const files = await lunaGetAll(`parts/${part.id}/attachments`);
+    const [files, { tools }] = await Promise.all([lunaGetAll(`parts/${part.id}/attachments`), getOptions()]);
+    const tool = (tools || []).find((t) => t.id === part.tool_id);
     const highest = files.reduce((n, f) => Math.max(n, Number(f.revision) || 1), 0);
     res.json({
       lunaPartId: part.id,
       nextRevision: highest + 1,
       hadDxf: files.some((f) => attachmentExtension(f) === 'dxf'),
       hadStep: files.some((f) => ['step', 'stp'].includes(attachmentExtension(f))),
+      // The machine set in LUNA is CNC, so the part must have a DXF.
+      cncTool: Boolean(tool && isCncTool(tool.name)),
     });
   } catch (err) {
     console.error('LUNA Parts file lookup failed:', err);
@@ -113,13 +119,13 @@ router.post('/api/luna/dxf-check', requireLogin, requirePanel, validate('body', 
           const d = shape.detect;
           const tool = toolName.get(lunaPart.tool_id) || '';
           let needs = false;
-          if (d && d.type === 'tube') {
-            needs = d.needsDxf;
-            out.why = d.needsDxf ? `box tube with holes to mill (${d.dxfSides.map((x) => x.side).join(' + ')} side)` : '';
-          } else if (d && d.type === 'plate') {
-            needs = !NO_DXF_TOOLS.test(tool);
-            out.why = needs ? (d.pockets ? 'pocketed plate' : 'plate') : '';
-          } else if (/cnc|mill|router/i.test(tool) && !/lathe/i.test(tool)) {
+          if (d && d.type === 'tube' && d.needsDxf) {
+            needs = true;
+            out.why = `box tube with holes to mill (${d.dxfSides.map((x) => x.side).join(' + ')} side)`;
+          } else if (d && d.type === 'plate' && !NO_DXF_TOOLS.test(tool)) {
+            needs = true;
+            out.why = d.pockets ? 'pocketed plate' : 'plate';
+          } else if (isCncTool(tool)) {
             needs = true;
             out.why = `machine in LUNA is ${tool}`;
           }
@@ -307,6 +313,9 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
 
   const files = [];
   const notes = [];
+  // Set when a DXF was wanted (a CNC part) but couldn't be made, so the panel
+  // can flag the part instead of calling the upload a success.
+  let dxfMissing = false;
 
   let resolved;
   try {
@@ -339,6 +348,7 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
     if (faceId && !dxf.value.usedClicked) notes.push('The clicked face isn\'t flat, so the DXF uses the part\'s largest flat face.');
   } else {
     console.error('DXF build failed:', dxf.reason);
+    dxfMissing = true;
     notes.push(dxf.reason.status ? 'Couldn\'t read the part from Onshape for the DXF.' : dxf.reason.message);
   }
   if (!drawingId) {
@@ -359,7 +369,7 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
     }
   }
 
-  if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes });
+  if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes, dxfMissing });
 
   // The drawing PDF goes up on its own with is_drawing, so LUNA lists it as
   // the part's drawing (and puts it in the project's design pack). LUNA
@@ -390,16 +400,17 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
           error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem,
           attached,
           notes,
+          dxfMissing,
         });
       }
       attached.push(...group.files.map((f) => f.name));
     } catch (err) {
       console.error('LUNA Parts attachment upload failed:', err);
       const problem = 'Could not reach LUNA Parts to upload the files.';
-      return res.status(502).json({ error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem, attached, notes });
+      return res.status(502).json({ error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem, attached, notes, dxfMissing });
     }
   }
-  res.json({ attached, notes });
+  res.json({ attached, notes, dxfMissing });
 });
 
 module.exports = router;

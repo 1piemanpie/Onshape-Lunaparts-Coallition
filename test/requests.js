@@ -134,6 +134,8 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/luna/parts/x/attachments', { partId: 'JHD' }],
     ['POST', '/api/luna/parts/11/attachments', { partId: 'JHD', faceId: 'bad face', partNumber: 'X' }],
     ['POST', '/api/luna/parts/11/attachments', { partId: 'JHD', wantDxf: false }],
+    // A CNC part whose DXF can't be made: the PDF still goes up, flagged dxfMissing.
+    ['POST', '/api/luna/parts/11/attachments', { partId: 'JZZ', partNumber: '26O-E098', drawingId: DRW }],
     ['POST', '/api/luna/parts', '{bad json'],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '26O-E070', quantity: '12abc', material: 7, partName: false }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '26O-E071', quantity: '2.7' }],

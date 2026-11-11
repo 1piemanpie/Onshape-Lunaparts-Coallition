@@ -1158,6 +1158,7 @@
       const detect = part.detect || (shape && shape.detect) || null;
       const found = dxfCheck.byPart.get(part.partId);
       const missingDxf = !info.hadDxf && Boolean((found && found.missing)
+        || info.cncTool
         || (detect && detect.needsDxf && detect.type === 'tube')
         || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
       const wantDxf = info.hadDxf || missingDxf;
@@ -1187,6 +1188,11 @@
       });
       for (const note of body.notes || []) log(note, 'error');
       log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${info.nextRevision}.`, 'success');
+      if (wantDxf && body.dxfMissing) {
+        flagMissingDxf(part, number);
+        showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
+        return;
+      }
       if (missingDxf) {
         if (found) found.missing = false;
         log(`${number} had no DXF in LUNA, so one was added.`, 'success');
@@ -2820,13 +2826,25 @@
       });
       for (const note of body.notes || []) log(note, 'error');
       log(`Attached ${body.attached.join(', ')} to ${created.partNumber}.`, 'success');
+      if (body.dxfMissing) {
+        flagMissingDxf(job.onshapePart, created.partNumber);
+        return { ok: false, text: `${body.attached.join(' + ')} went up, but NO DXF: ${(body.notes || []).join(' ')} A CNC part needs one: fix it in Onshape, then tap ADD DXF under ALREADY IN LUNA PARTS.` };
+      }
       const notes = (body.notes || []).length ? ` (${body.notes.join(' ')})` : '';
       return { ok: true, text: `${body.attached.join(' + ')}${notes}` };
     } catch (err) {
       for (const note of (err.body && err.body.notes) || []) log(note, 'error');
+      if (err.body && err.body.dxfMissing) flagMissingDxf(job.onshapePart, created.partNumber);
       log(err.message, 'error');
       return { ok: false, text: `the files weren't attached: ${err.message}` };
     }
+  }
+
+  // A CNC part went to LUNA without its DXF: show ADD DXF on its row.
+  function flagMissingDxf(onshapePart, number) {
+    if (!onshapePart) return;
+    dxfCheck.byPart.set(onshapePart.partId, { partId: onshapePart.partId, number, missing: true, why: 'the DXF couldn\u2019t be made at upload' });
+    log(`${number} is a CNC part but has no DXF in LUNA Parts yet.`, 'error');
   }
 
   function uploadCounts() {
@@ -2856,11 +2874,17 @@
     // starts on the saw and goes to the mill after (Micah 2026-11-03). One
     // with nothing to mill still gets a DXF if the Machine is set to CNC by hand.
     if (part && part.detect && part.detect.type === 'tube' && part.detect.needsDxf) return true;
-    if (tubeNothingToMill(part)) return false;
+    // Team rule: anything set to a CNC machine (mill/router, not lathe) gets a DXF.
     const option = toolSelect.selectedOptions[0];
     const machine = toolSelect.value && option ? option.textContent : '';
-    if (machine) return /cnc|mill|router/i.test(machine) && !/lathe/i.test(machine);
+    if (machine && isCncName(machine)) return true;
+    if (tubeNothingToMill(part)) return false;
+    if (machine) return false;
     return Boolean(part) && !['stock', 'hardware', 'block'].includes(part.group);
+  }
+
+  function isCncName(name) {
+    return /cnc|mill|router/i.test(name || '') && !/lathe/i.test(name || '');
   }
 
   function tubeNothingToMill(part) {
