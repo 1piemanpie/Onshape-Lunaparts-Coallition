@@ -178,7 +178,7 @@ router.get('/api/luna/assemblies', requireLogin, validate('query', schemas.proje
     });
   } catch (err) {
     console.error('LUNA Parts request failed:', err);
-    res.status(502).json({ error: message });
+    res.status(502).json({ error: 'Could not load assemblies from LUNA Parts.' });
   }
 });
 
