@@ -57,9 +57,7 @@ GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaa
 GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9 {"properties":[{"propertyId":"dNum","value":"26O-E001"},{"propertyId":"dT1","value":"Plate"}]}
-GET build.lunatecs.org/api/v1/projects 
-GET build.lunatecs.org/api/v1/tools 
-GET build.lunatecs.org/api/v1/material-thicknesses 
+GET build.lunatecs.org/api/v1/options 
 GET build.lunatecs.org/api/v1/parts 
 GET build.lunatecs.org/api/v1/parts 
 GET build.lunatecs.org/api/v1/parts/11/attachments 
@@ -78,9 +76,6 @@ GET build.lunatecs.org/api/v1/parts/11
 GET build.lunatecs.org/api/v1/parts?project_id=5 
 GET build.lunatecs.org/api/v1/parts/77 
 GET build.lunatecs.org/api/v1/parts?project_id=5 
-GET build.lunatecs.org/api/v1/parts 
-GET build.lunatecs.org/api/v1/parts/11 
-GET build.lunatecs.org/api/v1/parts/12 
 GET cad.onshape.com/api/users/sessioninfo 
 GET build.lunatecs.org/api/v1/parts?project_id=5 
 POST build.lunatecs.org/api/v1/parts project_id=5&name=New plate&part_number=26O-E050&part_status_id=1&type=part&quantity=2&tool_id=2&priority=1&material=6061&material_thickness_id=7&cut_length=1.5&description=d&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)

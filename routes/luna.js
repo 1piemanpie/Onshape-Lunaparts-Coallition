@@ -7,7 +7,9 @@ const {
   isLocalSource, ONSHAPE_TAG, linkedPartKey, getAssemblyParts, resolvePart, partShape, onshapeUserName,
 } = require('../lib/onshape/parts');
 const { safeFileName, buildDxf, exportStep, exportDrawingPdf } = require('../lib/onshape/exports');
-const { lunaRequest, lunaGetAll, attachmentExtension, getStatuses } = require('../lib/luna');
+const {
+  lunaRequest, lunaGetAll, attachmentExtension, getOptions, getStatuses,
+} = require('../lib/luna');
 const { REAM_UNDERSIZE_IN } = require('../lib/dxf');
 const { requireLogin, requirePanel, requireLunaKey, validate } = require('../lib/middleware');
 const schemas = require('../lib/schemas');
@@ -18,24 +20,8 @@ const router = express.Router();
 // an Onshape login so the team's project list isn't public on this URL.
 router.get('/api/luna/options', requireLogin, requireLunaKey, async (req, res) => {
   try {
-    const [projects, tools, thicknesses] = await Promise.all([
-      lunaGetAll('projects'),
-      lunaGetAll('tools'),
-      lunaGetAll('material-thicknesses'),
-    ]);
-
-    res.json({
-      projects: projects
-        .filter((p) => !p.completed_at)
-        .map((p) => ({ id: p.id, name: p.name, prefix: p.part_number_prefix })),
-      tools: tools
-        .filter((t) => t.is_active)
-        .sort((a, b) => a.order - b.order)
-        .map((t) => ({ id: t.id, name: t.name })),
-      thicknesses: thicknesses
-        .sort((a, b) => a.order - b.order)
-        .map((t) => ({ id: t.id, name: t.name })),
-    });
+    const { projects, tools, thicknesses } = await getOptions();
+    res.json({ projects, tools, thicknesses });
   } catch (err) {
     console.error('LUNA Parts request failed:', err);
     const message = err.status === 401
@@ -192,7 +178,7 @@ router.get('/api/luna/assemblies', requireLogin, validate('query', schemas.proje
     });
   } catch (err) {
     console.error('LUNA Parts request failed:', err);
-    res.status(502).json({ error: 'Could not load assemblies from LUNA Parts.' });
+    res.status(502).json({ error: message });
   }
 });
 
