@@ -256,6 +256,8 @@
   /* Assembly hardware sits under a fold at the bottom of the list. */
   .hw-fold { border-top: 1px solid var(--line); }
   .dxf-check { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .design-packs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .design-packs a { text-decoration: none; }
   .hw-fold summary {
     padding: 7px 10px; cursor: pointer; font-family: var(--heading); font-weight: 700;
     font-size: 12px; letter-spacing: 0.08em; color: var(--muted); background: #fafafa;
@@ -531,6 +533,7 @@
   <section id="doneScreen" hidden>
     <h2 id="doneTitle" class="card-title">Done</h2>
     <div id="doneList" class="part-list"></div>
+    <div id="designPacks" class="design-packs" hidden></div>
   </section>
 
   <details>
@@ -2697,7 +2700,7 @@
     for (const s of ready) {
       s.uploading = true;
       s.error = '';
-      const result = { name: s.number, outcome: 'pending', detail: 'Waiting to upload…', kind: '' };
+      const result = { name: s.number, outcome: 'pending', detail: 'Waiting to upload…', kind: '', projectId: String(s.part.projectId || '') };
       state.results.push(result);
       uploadQueue.push({
         part: s.part,
@@ -2954,6 +2957,30 @@
     if (c.failed) summary += `. ${c.failed} failed and ${c.failed === 1 ? 'is' : 'are'} ticked again on the parts list`;
     if (c.stopped) summary += `. ${c.stopped} stopped when the panel closed; check ${c.stopped === 1 ? 'it' : 'them'} in LUNA Parts`;
     showHint(`${summary}.`, c.failed ? 'bad' : (c.sent ? 'good' : ''));
+    showDesignPacks(c);
+  }
+
+  // Once a batch is in, a link to each project's design pack on LUNA Parts:
+  // one PDF of every part's drawing, made by LUNA from the drawing PDFs.
+  const LUNA_WEB = 'https://build.lunatecs.org';
+  function showDesignPacks(c) {
+    const box = el('designPacks');
+    box.replaceChildren();
+    const ids = c.pending ? [] : [...new Set(state.results
+      .filter((r) => r.outcome === 'created' && /^\d+$/.test(r.projectId || ''))
+      .map((r) => r.projectId))];
+    for (const id of ids) {
+      const project = (state.projects || []).find((p) => String(p.id) === id);
+      const link = document.createElement('a');
+      link.className = 'mini design-pack';
+      link.href = `${LUNA_WEB}/projects/${id}/design-pack`;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = `DESIGN PACK${ids.length > 1 && project ? ` · ${project.name}` : ''} \u2197`;
+      link.title = 'Open this project\'s design pack (every drawing in one PDF) on LUNA Parts';
+      box.appendChild(link);
+    }
+    box.hidden = !ids.length;
   }
 
   // ---- Making drawings ------------------------------------------------------
