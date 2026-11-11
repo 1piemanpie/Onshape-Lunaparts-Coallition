@@ -8,7 +8,7 @@ const {
 } = require('../lib/onshape/parts');
 const { safeFileName, buildDxf, exportStep, exportDrawingPdf } = require('../lib/onshape/exports');
 const {
-  lunaRequest, lunaGetAll, attachmentExtension, getOptions, getStatuses,
+  lunaRequest, lunaGetAll, attachmentExtension, getOptions, getStatuses, getParts, getProjectParts,
 } = require('../lib/luna');
 const { REAM_UNDERSIZE_IN } = require('../lib/dxf');
 const { requireLogin, requirePanel, requireLunaKey, validate } = require('../lib/middleware');
@@ -37,7 +37,7 @@ router.get('/api/luna/options', requireLogin, requireLunaKey, async (req, res) =
 // parts that have been uploaded.
 router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
   try {
-    const parts = await lunaGetAll('parts');
+    const parts = await getParts();
     const linked = {};
     for (const p of parts) {
       const m = String(p.notes || '').match(ONSHAPE_TAG);
@@ -60,7 +60,7 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
 router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partFilesQuery), async (req, res) => {
   const { number } = req.input;
   try {
-    const parts = await lunaGetAll('parts');
+    const parts = await getParts();
     const part = parts.find((p) => String(p.part_number || '').trim().toUpperCase() === number);
     if (!part) return res.status(404).json({ error: `${number} isn't in LUNA Parts.` });
     const files = await lunaGetAll(`parts/${part.id}/attachments`);
@@ -86,7 +86,7 @@ const NO_DXF_TOOLS = /lathe|saw|print|3d/i;
 router.post('/api/luna/dxf-check', requireLogin, requirePanel, validate('body', schemas.dxfCheckBody), async (req, res) => {
   const asked = req.input.parts;
   try {
-    const [lunaParts, tools] = await Promise.all([lunaGetAll('parts'), lunaGetAll('tools')]);
+    const [lunaParts, tools] = await Promise.all([getParts(), lunaGetAll('tools')]);
     const byNumber = new Map(lunaParts.map((p) => [String(p.part_number || '').trim().toUpperCase(), p]));
     const toolName = new Map(tools.map((t) => [t.id, String(t.name || '')]));
     const results = [];
@@ -142,7 +142,7 @@ router.post('/api/luna/parts/:id/number', requireLogin,
     if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
     const gotBody = await got.json();
     const part = gotBody.data || gotBody;
-    const siblings = await lunaGetAll(`parts?project_id=${part.project_id}`);
+    const siblings = await getProjectParts(part.project_id);
     const clash = siblings.find((p) => p.id !== part.id && p.project_id === part.project_id
       && String(p.part_number || '').trim().toUpperCase() === number.toUpperCase());
     if (clash) return res.status(409).json({ error: `${clash.part_number} already exists in this project ("${clash.name}"), so ${part.part_number} wasn't renamed.` });
@@ -165,12 +165,10 @@ router.post('/api/luna/parts/:id/number', requireLogin,
 });
 
 // Read-only: assemblies in one project, for the "Parent Assembly" dropdown.
-// The API mentions a project_id filter without documenting it, so we pass
-// it and also filter here in case it's ignored.
 router.get('/api/luna/assemblies', requireLogin, validate('query', schemas.projectQuery), async (req, res) => {
   const projectId = req.input.project_id;
   try {
-    const parts = await lunaGetAll(`parts?project_id=${projectId}`);
+    const parts = await getProjectParts(projectId);
     res.json({
       assemblies: parts
         .filter((p) => p.project_id === projectId && p.type === 'assembly')
@@ -236,7 +234,7 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
 
   try {
     if (fields.part_number) {
-      const existing = await lunaGetAll(`parts?project_id=${fields.project_id}`);
+      const existing = await getProjectParts(fields.project_id);
       const duplicate = existing.find((p) => p.project_id === fields.project_id
         && String(p.part_number).toLowerCase() === fields.part_number.toLowerCase());
       if (duplicate) {

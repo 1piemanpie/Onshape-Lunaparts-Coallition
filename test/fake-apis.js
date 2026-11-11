@@ -40,13 +40,13 @@ const partsList = [
   { partId: 'JKD', name: 'Hex shaft', material: null },
 ];
 const lunaParts = [
-  { id: 11, project_id: 5, name: 'Plate', part_number: '26O-E001', part_status_id: 1, type: 'part', quantity: 1, tool_id: 2, notes: '' },
+  { id: 11, project_id: 5, name: 'Plate', part_number: '26O-E001', part_status_id: 1, type: 'part', quantity: 1, tool_id: 2, notes: '', updated_at: '2026-11-01T00:00:00Z' },
   { id: 12, project_id: 5, name: 'Shaft', part_number: '26O-E007', part_status_id: 2, type: 'part', quantity: 2, tool_id: 3, notes: `[onshape:${D}|${LD}|${LE}|JFD|]` },
   { id: 13, project_id: 5, name: 'Elevator', part_number: '26O-E100', part_status_id: 1, type: 'assembly', quantity: 1, status: { id: 1, name: 'Design' } },
 ];
 
 function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', Date: 'Wed, 11 Nov 2026 02:00:00 GMT' } });
 }
 
 async function summarize(body) {
@@ -122,7 +122,7 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (u.host === 'build.lunatecs.org') {
     const q = p.replace('/api/v1', '');
-    const page = (data) => json({ data, next_page_url: null });
+    const page = (data) => json({ data, current_page: 1, last_page: 1, next_page_url: null });
     // GET /options: every dropdown list at once (LUNA build 0.3.79 and later).
     if (q === '/options') {
       return json({
@@ -137,6 +137,9 @@ globalThis.fetch = async (url, opts = {}) => {
     if (q === '/material-thicknesses') return page([{ id: 8, name: '1/4', order: 2 }, { id: 7, name: '1/8', order: 1 }]);
     if (q === '/parts' && method === 'GET') {
       const pid = Number(u.searchParams.get('project_id'));
+      const since = u.searchParams.get('updated_since');
+      // A sync: parts changed since then (none here) plus deleted ids.
+      if (since) return json({ data: lunaParts.filter((x) => x.updated_at >= since), deleted_ids: [], current_page: 1, last_page: 1 });
       return page(pid ? lunaParts.filter((x) => x.project_id === pid) : lunaParts);
     }
     if (q === '/parts' && method === 'POST') {
