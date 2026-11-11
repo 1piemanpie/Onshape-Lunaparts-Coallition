@@ -344,7 +344,7 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
   if (!drawingId) {
     notes.push('No drawing was chosen, so no PDF was attached.');
   } else if (pdf.status === 'fulfilled') {
-    files.push({ name: `${fileBase} drawing.pdf`, type: 'application/pdf', data: pdf.value });
+    files.push({ name: `${fileBase} drawing.pdf`, type: 'application/pdf', data: pdf.value, drawing: true });
   } else {
     console.error('Drawing PDF export failed:', pdf.reason);
     notes.push(pdf.reason.status ? `Couldn't export the drawing PDF (Onshape ${pdf.reason.status}).` : pdf.reason.message);
@@ -361,29 +361,45 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
 
   if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes });
 
-  try {
-    const form = new FormData();
-    for (const f of files) form.append('files[]', new Blob([f.data], { type: f.type }), f.name);
-    if (revision && revision > 1) {
-      form.append('revision', String(revision));
-      form.append('description', 'Updated from Onshape');
-    }
+  // The drawing PDF goes up on its own with is_drawing, so LUNA lists it as
+  // the part's drawing (and puts it in the project's design pack). LUNA
+  // marks a whole upload at once, so the other files go in a second request.
+  const groups = [
+    { files: files.filter((f) => !f.drawing), isDrawing: false },
+    { files: files.filter((f) => f.drawing), isDrawing: true },
+  ].filter((g) => g.files.length);
+  const attached = [];
 
-    const lunaRes = await lunaRequest(`parts/${lunaPartId}/attachments`, { method: 'POST', body: form });
-    if (!lunaRes.ok) {
-      const body = await lunaRes.json().catch(() => ({}));
-      console.error('LUNA Parts attachment upload failed:', lunaRes.status, body);
-      const details = lunaRes.status === 422 ? Object.values(body.errors || {}).flat().join(' ') : '';
-      return res.status(502).json({
-        error: details || `LUNA Parts didn't accept the files (${lunaRes.status}).`,
-        notes,
-      });
+  for (const group of groups) {
+    try {
+      const form = new FormData();
+      for (const f of group.files) form.append('files[]', new Blob([f.data], { type: f.type }), f.name);
+      if (group.isDrawing) form.append('is_drawing', '1');
+      if (revision && revision > 1) {
+        form.append('revision', String(revision));
+        form.append('description', 'Updated from Onshape');
+      }
+
+      const lunaRes = await lunaRequest(`parts/${lunaPartId}/attachments`, { method: 'POST', body: form });
+      if (!lunaRes.ok) {
+        const body = await lunaRes.json().catch(() => ({}));
+        console.error('LUNA Parts attachment upload failed:', lunaRes.status, body);
+        const details = lunaRes.status === 422 ? Object.values(body.errors || {}).flat().join(' ') : '';
+        const problem = details || `LUNA Parts didn't accept the files (${lunaRes.status}).`;
+        return res.status(502).json({
+          error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem,
+          attached,
+          notes,
+        });
+      }
+      attached.push(...group.files.map((f) => f.name));
+    } catch (err) {
+      console.error('LUNA Parts attachment upload failed:', err);
+      const problem = 'Could not reach LUNA Parts to upload the files.';
+      return res.status(502).json({ error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem, attached, notes });
     }
-    res.json({ attached: files.map((f) => f.name), notes });
-  } catch (err) {
-    console.error('LUNA Parts attachment upload failed:', err);
-    res.status(502).json({ error: 'Could not reach LUNA Parts to upload the files.', notes });
   }
+  res.json({ attached, notes });
 });
 
 module.exports = router;
