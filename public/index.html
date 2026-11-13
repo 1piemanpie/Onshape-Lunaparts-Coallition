@@ -1329,7 +1329,7 @@
     if (mine.length) {
       const group = document.createElement('div');
       group.className = 'nodraw-group';
-      group.textContent = 'IN THIS ASSEMBLY';
+      group.textContent = 'IN THIS ASSEMBLY: PRESS ADD TO MAKE AND SEND ITS DRAWING';
       list.appendChild(group);
     }
     for (const part of mine) {
@@ -1380,7 +1380,7 @@
     if (elsewhere.length) {
       const group = document.createElement('div');
       group.className = 'nodraw-group';
-      group.textContent = 'NOT IN THIS ASSEMBLY: OPEN THE ONE THEY’RE IN';
+      group.textContent = 'IN OTHER ASSEMBLIES (CAN’T BE FIXED FROM HERE)';
       list.appendChild(group);
     }
     for (const r of elsewhere) {
@@ -1394,7 +1394,10 @@
       const sub = document.createElement('span');
       sub.className = 'part-sub';
       sub.textContent = [r.name, r.projectName].filter(Boolean).join(' · ');
-      text.append(name, sub);
+      const how = document.createElement('span');
+      how.className = 'part-sub';
+      how.textContent = 'To fix: open the Onshape assembly or Part Studio that has this part, open this panel there, and press ADD.';
+      text.append(name, sub, how);
       row.appendChild(text);
       list.appendChild(row);
     }
