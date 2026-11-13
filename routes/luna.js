@@ -102,9 +102,15 @@ router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partF
     const [files, { tools }] = await Promise.all([lunaGetAll(`parts/${part.id}/attachments`), getOptions()]);
     const tool = (tools || []).find((t) => t.id === part.tool_id);
     const highest = files.reduce((n, f) => Math.max(n, Number(f.revision) || 1), 0);
+    // The newest drawing PDF's file name, so UPDATE ALL can tell whether it
+    // still carries an old number (26OE-007 drawing.pdf on 26O-E040).
+    const pdfs = files.filter((f) => attachmentExtension(f) === 'pdf')
+      .sort((a, b) => (Number(b.revision) || 1) - (Number(a.revision) || 1) || Number(Boolean(b.is_drawing)) - Number(Boolean(a.is_drawing)));
+    const drawingFile = pdfs.length ? String(pdfs[0].original_filename || pdfs[0].filename || pdfs[0].name || '') : '';
     res.json({
       lunaPartId: part.id,
       projectId: part.project_id,
+      drawingFile,
       nextRevision: highest + 1,
       hadDxf: files.some((f) => attachmentExtension(f) === 'dxf'),
       hadStep: files.some((f) => ['step', 'stp'].includes(attachmentExtension(f))),
