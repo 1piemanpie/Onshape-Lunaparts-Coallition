@@ -1200,7 +1200,15 @@
         || (detect && detect.needsDxf && detect.type === 'tube')
         || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
       const wantDxf = info.hadDxf || missingDxf;
-      if (!drawing && !wantDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      if (!drawing && !wantDxf && !info.hadStep) {
+        // RENUMBER still did its main job (the new number in LUNA).
+        if (renumber) {
+          log(`${number} is renumbered, but no drawing tab named ${lunaNumber} or ${number} is in this document, so no new drawing was sent. If its drawing is in another document, rename that tab to start with ${number}, then press UPDATE FILES here.`, 'error');
+          showToast(`\u2713 Renumbered to ${number}`, 4000);
+          return;
+        }
+        throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      }
       if (!renumber && number.toUpperCase() !== lunaNumber.toUpperCase()) {
         await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
           method: 'POST',
