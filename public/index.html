@@ -1159,8 +1159,15 @@
       // Match "26O-E018 Drawing 1" or the old "E018 Drawing 1".
       const names = new Set([number, lunaNumber].map(firstWord));
       const shorts = new Set([number, lunaNumber].map((n) => shortNumber(firstWord(n))));
-      const drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
+      let drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
+      // A linked part saved before its number came in got a drawing named
+      // after its catalog name ("Shaft Drawing 1"). Use it when it's the
+      // only one, and RENUMBER renames it.
+      if (!drawing && part.linked) {
+        const byName = (state.drawings || []).filter((d) => String(d.name || '').replace(/\s+Drawing\s+\d+$/i, '').trim().toLowerCase() === String(part.name || '').trim().toLowerCase());
+        if (byName.length === 1) drawing = byName[0];
+      }
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
@@ -1175,7 +1182,10 @@
         state.uploaded.add(number.toUpperCase());
         if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
         log(`Renumbered ${lunaNumber} to ${number} in LUNA Parts.`, 'success');
-        if (drawing) {
+      }
+      // A linked part's drawing tab that isn't named after its number (an
+      // old number, or the catalog name) is renamed to match.
+      if (part.linked && drawing && firstWord(drawing.name) !== firstWord(number)) {
           try {
             const done = await getJson('/api/onshape/renumber-drawing', {
               method: 'POST',
@@ -1187,7 +1197,6 @@
           } catch (err) {
             log(`Couldn't rename the drawing tab ${drawing.name}: ${err.message}. Rename it to start with ${number} by hand.`, 'error');
           }
-        }
       }
       // Auto-detect may say it needs a DXF it never got (e.g. box tube with
       // extra holes sent before step 4). Shape data is cached per Part Studio.
@@ -1200,7 +1209,15 @@
         || (detect && detect.needsDxf && detect.type === 'tube')
         || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
       const wantDxf = info.hadDxf || missingDxf;
-      if (!drawing && !wantDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      if (!drawing && !wantDxf && !info.hadStep) {
+        // RENUMBER still did its main job (the new number in LUNA).
+        if (renumber) {
+          log(`${number} is renumbered, but no drawing tab named ${lunaNumber} or ${number} is in this document, so no new drawing was sent. If its drawing is in another document, rename that tab to start with ${number}, then press UPDATE FILES here.`, 'error');
+          showToast(`\u2713 Renumbered to ${number}`, 4000);
+          return;
+        }
+        throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
+      }
       if (!renumber && number.toUpperCase() !== lunaNumber.toUpperCase()) {
         await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
           method: 'POST',
@@ -1958,7 +1975,16 @@
   // Linked parts (FRC Design App shafts, spacers) keep their catalog name in
   // Onshape; their team number is found in LUNA by the tag in its notes.
   function lunaNumberFor(part) {
-    return (part.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(part.onshapeKey)) || '';
+    const byKey = part.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(part.onshapeKey);
+    if (byKey) return byKey;
+    // No key match: a linked part uploaded under the same catalog name,
+    // as long as no other linked part in this list already has that number.
+    if (!part.linked || !state.linkedByName) return '';
+    const byName = state.linkedByName.get(String(part.name || '').trim().toLowerCase());
+    if (!byName) return '';
+    const taken = (state.parts || []).some((p) => p !== part && p.linked && p.onshapeKey
+      && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === byName);
+    return taken ? '' : byName;
   }
 
   // "26O-E018" -> "E018": the number without the year/robot prefix.
@@ -2030,6 +2056,7 @@
       const body = await getJson('/api/luna/part-numbers');
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
+      state.linkedByName = new Map(Object.entries(body.linkedByName || {}));
       if (state.screen === 'list') renderPartList();
     } catch (err) {
       log(err.message, 'error');
@@ -2510,6 +2537,15 @@
   cardProjectSelect.addEventListener('change', checkNumber);
 
   function saveCard() {
+    // A linked part's number is filled in a moment after its card opens.
+    // Saving before then named its drawing after the catalog part ("Shaft
+    // Drawing 1") instead of its number, so wait for it.
+    const linkedNow = currentPart();
+    if (linkedNow && linkedNow.linked && !el('partNumberInput').value.trim()) {
+      showHint('Still finding the next number for this linked part. Wait a second, or type the number, then press SAVE & NEXT.', 'bad');
+      el('partNumberInput').focus();
+      return;
+    }
     const problem = numberProblem();
     const typed = `${currentPartId()}|${el('partNumberInput').value.trim()}|${cardProjectSelect.value}`;
     if (problem && numberConfirmed !== typed) {
