@@ -449,6 +449,7 @@
         <label for="partNumberInput">Part Number</label>
         <input id="partNumberInput" type="text" maxlength="255" placeholder="Auto" />
         <p id="numberWarn" class="hint left warn"></p>
+        <button id="linkBtn" class="see" type="button" hidden>LINK TO IT</button>
       </div>
 
       <div class="field full">
@@ -3111,12 +3112,57 @@
     }
     return '';
   }
+  // A linked part whose typed number is already in LUNA: it was uploaded
+  // before but its link was lost, so LINK ties it to that LUNA part instead
+  // of uploading a duplicate.
+  function existingLinkedNumber() {
+    const part = currentPart();
+    const number = el('partNumberInput').value.trim().toUpperCase();
+    return part && part.linked && number && state.uploaded && state.uploaded.has(number) ? number : '';
+  }
   function checkNumber() {
-    const problem = numberProblem();
+    const dup = existingLinkedNumber();
+    const problem = dup
+      ? `\u26a0 ${dup} is already in LUNA Parts. If this is that part, press LINK TO IT instead of saving, so it isn\u2019t uploaded twice.`
+      : numberProblem();
+    el('linkBtn').hidden = !dup;
     el('numberWarn').textContent = problem;
     if (!problem && footerHint.textContent.includes('again to save it anyway')) showHint('');
   }
   el('partNumberInput').addEventListener('input', checkNumber);
+
+  // LINK TO IT: saves this linked part's Onshape link on the LUNA part with
+  // that number (its external_ref), so it shows under ALREADY IN LUNA from
+  // now on. Nothing else in LUNA changes. 1-2 Onshape calls at most.
+  async function linkToExisting() {
+    const part = currentPart();
+    const number = existingLinkedNumber();
+    if (!part || !number) return;
+    const button = el('linkBtn');
+    button.disabled = true;
+    try {
+      const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(number)}`);
+      const done = await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partNumber: info.partNumber || number, onshapePartId: part.partId, relink: true }),
+      });
+      const real = done.partNumber || number;
+      if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, real);
+      if (done.linkedKey && state.linkedNumbers) state.linkedNumbers.set(done.linkedKey, real);
+      log(`Linked ${part.name} to ${real} in LUNA Parts. It won\u2019t be uploaded again.`, 'success');
+      showToast(`\u2713 Linked to ${real}`, 3000);
+      unstage(part.partId);
+      if (state.step + 1 >= state.queue.length && !state.staged.length) { showScreen('list'); renderPartList(); }
+      else nextCard();
+    } catch (err) {
+      log(`Couldn't link to ${number}: ${err.message}`, 'error');
+      showHint(`Couldn\u2019t link: ${err.message}`, 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  }
+  el('linkBtn').addEventListener('click', linkToExisting);
   cardProjectSelect.addEventListener('change', checkNumber);
 
   function saveCard() {
@@ -3127,6 +3173,11 @@
     if (linkedNow && linkedNow.linked && !el('partNumberInput').value.trim()) {
       showHint('Still finding the next number for this linked part. Wait a second, or type the number, then press SAVE & NEXT.', 'bad');
       el('partNumberInput').focus();
+      return;
+    }
+    const dup = existingLinkedNumber();
+    if (dup) {
+      showHint(`${dup} is already in LUNA Parts. Press LINK TO IT if this is that part, or type a different number.`, 'bad');
       return;
     }
     const problem = numberProblem();

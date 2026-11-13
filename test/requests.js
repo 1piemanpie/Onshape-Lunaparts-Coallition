@@ -194,6 +194,9 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/luna/parts', { projectId: 5, name: 'Linked shaft', partNumber: '26O-E060', statusId: 1, type: 'part', quantity: 1, onshapePartId: linked.partId }],
     ['POST', '/api/luna/parts/11/attachments', { partId: linked.partId, partNumber: '26O-E007', wantStep: true }],
     ['POST', '/api/luna/dxf-check', { parts: [{ partId: local.partId, number: '26O-E001' }] }],
+    // LINK TO IT: a linked part tied to the LUNA part already numbered E011.
+    ['POST', '/api/luna/parts/11/number', { partNumber: '26O-E011', onshapePartId: linked.partId, relink: true }],
+    ['POST', '/api/luna/parts/11/number', { partNumber: '26O-E011', onshapePartId: 'a999999999999', relink: true }],
     // RENUMBER: the drawing tab "26OE-001 Drawing 1" becomes "26O-E037 Drawing 1".
     ['POST', '/api/onshape/renumber-drawing', { drawingId: DRW, partNumber: '26O-E037' }],
     ['POST', '/api/onshape/renumber-drawing', { drawingId: 'nothex', partNumber: '26O-E037' }],
