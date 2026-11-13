@@ -1975,7 +1975,16 @@
   // Linked parts (FRC Design App shafts, spacers) keep their catalog name in
   // Onshape; their team number is found in LUNA by the tag in its notes.
   function lunaNumberFor(part) {
-    return (part.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(part.onshapeKey)) || '';
+    const byKey = part.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(part.onshapeKey);
+    if (byKey) return byKey;
+    // No key match: a linked part uploaded under the same catalog name,
+    // as long as no other linked part in this list already has that number.
+    if (!part.linked || !state.linkedByName) return '';
+    const byName = state.linkedByName.get(String(part.name || '').trim().toLowerCase());
+    if (!byName) return '';
+    const taken = (state.parts || []).some((p) => p !== part && p.linked && p.onshapeKey
+      && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === byName);
+    return taken ? '' : byName;
   }
 
   // "26O-E018" -> "E018": the number without the year/robot prefix.
@@ -2047,6 +2056,7 @@
       const body = await getJson('/api/luna/part-numbers');
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
+      state.linkedByName = new Map(Object.entries(body.linkedByName || {}));
       if (state.screen === 'list') renderPartList();
     } catch (err) {
       log(err.message, 'error');

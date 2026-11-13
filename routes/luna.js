@@ -53,9 +53,23 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
       const number = String(p.part_number || '').trim();
       if (m && number && !linked[m[1]]) linked[m[1]] = number;
     }
+    // Linked parts by name too, for when a part's key no longer matches (a
+    // row of same-shape copies can be shown by a different copy, from
+    // another FRC Design App insert, after the panel reloads). The name is
+    // the catalog name the card filled in. Names used by two LUNA parts are
+    // left out, since they can't tell which is which.
+    const byName = {};
+    for (const p of parts) {
+      const tagged = EXTERNAL_REF.test(String(p.external_ref || '')) || ONSHAPE_TAG.test(String(p.notes || ''));
+      const name = String(p.name || '').trim().toLowerCase();
+      const number = String(p.part_number || '').trim();
+      if (!tagged || !name || !number) continue;
+      byName[name] = name in byName && byName[name] !== number ? null : number;
+    }
     res.json({
       partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
       linked,
+      linkedByName: Object.fromEntries(Object.entries(byName).filter(([, n]) => n)),
     });
   } catch (err) {
     console.error('LUNA Parts part-number list failed:', err);
