@@ -110,6 +110,7 @@ router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partF
     const drawingFile = pdfs.length ? String(pdfs[0].original_filename || pdfs[0].filename || pdfs[0].name || '') : '';
     res.json({
       lunaPartId: part.id,
+      partNumber: String(part.part_number || '').trim(),
       projectId: part.project_id,
       drawingFile,
       nextRevision: highest + 1,
@@ -212,7 +213,7 @@ router.post('/api/luna/dxf-check', requireLogin, requirePanel, validate('body', 
 // fields sent back, so the part is read first.
 router.post('/api/luna/parts/:id/number', requireLogin,
   validate('params', schemas.lunaIdParams), validate('body', schemas.renumberBody), async (req, res) => {
-  const { id, partNumber: number, onshapePartId } = req.input;
+  const { id, partNumber: number, onshapePartId, relink } = req.input;
   try {
     const got = await lunaRequest(`parts/${id}`);
     if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
@@ -229,16 +230,18 @@ router.post('/api/luna/parts/:id/number', requireLogin,
     }
     // A linked part that was uploaded without its link gets it now, so the
     // panel finds it by its key from then on (not just by name).
-    if (!fields.external_ref && onshapePartId && /^a[0-9a-f]{12}$/.test(onshapePartId) && req.session.onshapeContext) {
+    let linkedTo = '';
+    if ((!fields.external_ref || relink) && onshapePartId && /^a[0-9a-f]{12}$/.test(onshapePartId) && req.session.onshapeContext) {
       try {
         const list = await getAssemblyParts(req, { reuse: true });
         const linkedPart = list.byId.get(onshapePartId);
         const ctx = req.session.onshapeContext;
         const key = linkedPart && !isLocalSource(ctx, linkedPart.source) && linkedPartKey(ctx, linkedPart.source, linkedPart.partId);
-        if (key && `onshape:${key}`.length <= 400) fields.external_ref = `onshape:${key}`;
+        if (key && `onshape:${key}`.length <= 400) { fields.external_ref = `onshape:${key}`; linkedTo = key; }
       } catch (err) {
         console.error('Linked part lookup for renumber failed:', err.message);
       }
+      if (relink && !linkedTo) return res.status(409).json({ error: 'Couldn\'t find that linked part in this assembly, so nothing was linked. Reload the panel and try again.' });
     }
     if (!fields.part_status_id && part.status && part.status.id) fields.part_status_id = part.status.id;
     const put = await lunaRequest(`parts/${id}`, { method: 'PUT', json: fields });
@@ -246,7 +249,7 @@ router.post('/api/luna/parts/:id/number', requireLogin,
       console.error('LUNA Parts rename failed:', put.status, await put.text());
       return res.status(502).json({ error: `LUNA Parts didn't accept the new number (${put.status}).` });
     }
-    res.json({ ok: true, partNumber: number });
+    res.json({ ok: true, partNumber: number, ...(linkedTo ? { linkedKey: linkedTo } : {}) });
   } catch (err) {
     console.error('LUNA Parts rename failed:', err);
     res.status(502).json({ error: 'Could not reach LUNA Parts to rename the part.' });

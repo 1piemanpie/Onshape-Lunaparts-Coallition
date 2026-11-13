@@ -164,5 +164,10 @@ POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 26O-E007.dxf 4
 GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
 GET build.lunatecs.org/api/v1/parts/11/attachments?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts/11 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+PUT build.lunatecs.org/api/v1/parts/11 {"part_number":"26O-E011","name":"Plate","part_status_id":1,"tool_id":2,"type":"part","notes":"","quantity":1,"external_ref":"onshape:dddddddddddddddddddddddd|111111111111111111111111|333333333333333333333333|JFD|"}
+GET build.lunatecs.org/api/v1/parts/11 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/cccccccccccccccccccccccc 
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/cccccccccccccccccccccccc {"properties":[{"propertyId":"dName","value":"26O-E037 Drawing 1"},{"propertyId":"dNum","value":"26O-E037"}]}
