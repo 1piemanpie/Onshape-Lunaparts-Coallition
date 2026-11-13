@@ -958,12 +958,22 @@
         event.preventDefault();
         findMissingDxfs(state.parts.filter((p) => section(p) === 'uploaded'));
       });
+      const all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'see';
+      all.textContent = updateAll.running ? 'UPDATING\u2026' : 'UPDATE ALL';
+      all.disabled = updateAll.running;
+      all.title = 'Make every part here match its number: renumber linked parts with a wrong number, rename drawing tabs, and send a new drawing PDF to LUNA where the newest one has an old name. Parts that already match are skipped.';
+      all.addEventListener('click', (event) => {
+        event.preventDefault();
+        updateAllFiles();
+      });
       const note = document.createElement('span');
       note.className = 'part-sub';
-      note.textContent = dxfCheck.summary;
-      bar.append(find, note);
+      note.textContent = [updateAll.summary, dxfCheck.summary].filter(Boolean).join(' ');
+      bar.append(all, find, note);
       uploadedFold.appendChild(bar);
-      if (dxfCheck.running || dxfCheck.summary) uploadedFold.open = true;
+      if (dxfCheck.running || dxfCheck.summary || updateAll.running || updateAll.summary) uploadedFold.open = true;
     }
     foldFor('block', 'BLOCK CAD (DERIVED)', state.parts.filter((p) => section(p) === 'block'));
     foldFor('hardware', 'HARDWARE & COTS', state.parts.filter((p) => section(p) === 'hardware'));
@@ -1146,7 +1156,10 @@
   }
 
   const updatingFiles = new Set();
-  async function updateLunaFiles(part) {
+  // { onlyIfNeeded: true } (UPDATE ALL) skips a part whose drawing tab and
+  // newest drawing PDF in LUNA already carry its number. Returns 'updated',
+  // 'skipped' or 'failed'.
+  async function updateLunaFiles(part, { onlyIfNeeded = false, quiet = false } = {}) {
     const lunaNumber = lunaNumberOf(part) || part.name;
     const renumber = needsRenumber(part);
     // A local part renamed in Onshape after upload gets its new name in LUNA too.
@@ -1154,8 +1167,9 @@
     updatingFiles.add(part.partId);
     renderPartList();
     try {
-      // The drawing tab may have been renamed since the panel opened.
-      await loadDrawings();
+      // The drawing tab may have been renamed since the panel opened (UPDATE
+      // ALL reads the list once, before it starts).
+      if (!quiet) await loadDrawings();
       // Match "26O-E018 Drawing 1" or the old "E018 Drawing 1".
       const names = new Set([number, lunaNumber].map(firstWord));
       const shorts = new Set([number, lunaNumber].map((n) => shortNumber(firstWord(n))));
@@ -1183,20 +1197,32 @@
         if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
         log(`Renumbered ${lunaNumber} to ${number} in LUNA Parts.`, 'success');
       }
-      // A linked part's drawing tab that isn't named after its number (an
-      // old number, or the catalog name) is renamed to match.
-      if (part.linked && drawing && firstWord(drawing.name) !== firstWord(number)) {
+      // A drawing tab that isn't named after the part's number (an old
+      // number like E018, or a linked part's catalog name) is renamed to match.
+      // Linked parts' drawings are also checked for a stale number box (a
+      // drawing made as "Shaft", or before a RENUMBER): 2 Onshape calls,
+      // and only a box that's wrong gets written.
+      let drawingChanged = false;
+      if (drawing && (firstWord(drawing.name) !== firstWord(number) || part.linked)) {
           try {
             const done = await getJson('/api/onshape/renumber-drawing', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ drawingId: drawing.id, partNumber: number }),
             });
-            if (done.renamed) { drawing.name = done.name; log(`Renamed its drawing tab to ${done.name}.`, 'success'); }
-            else log(`Rename the drawing tab ${drawing.name} to start with ${number} by hand.`, 'error');
+            drawingChanged = Boolean(done.changed);
+            if (done.renamed && done.name !== drawing.name) { drawing.name = done.name; log(`Renamed its drawing tab to ${done.name}.`, 'success'); }
+            else if (!done.renamed) log(`Rename the drawing tab ${drawing.name} to start with ${number} by hand.`, 'error');
+            if (done.numberChanged) log(`Set the drawing's number box to ${number}.`, 'success');
           } catch (err) {
             log(`Couldn't rename the drawing tab ${drawing.name}: ${err.message}. Rename it to start with ${number} by hand.`, 'error');
           }
+      }
+      // UPDATE ALL leaves alone a part whose tab, number box and newest PDF
+      // in LUNA all already carry its number.
+      if (onlyIfNeeded && !renumber && !drawingChanged && drawing && firstWord(drawing.name) === firstWord(number)
+        && firstWord(info.drawingFile) === firstWord(number) && number.toUpperCase() === lunaNumber.toUpperCase()) {
+        return 'skipped';
       }
       // Auto-detect may say it needs a DXF it never got (e.g. box tube with
       // extra holes sent before step 4). Shape data is cached per Part Studio.
@@ -1227,8 +1253,8 @@
         // RENUMBER still did its main job (the new number in LUNA).
         if (renumber) {
           log(`${number} is renumbered, but no drawing tab named ${lunaNumber} or ${number} is in this document, so no new drawing was sent. If its drawing is in another document, rename that tab to start with ${number}, then press UPDATE FILES here.`, 'error');
-          showToast(`\u2713 Renumbered to ${number}`, 4000);
-          return;
+          if (!quiet) showToast(`\u2713 Renumbered to ${number}`, 4000);
+          return 'updated';
         }
         throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
       }
@@ -1259,20 +1285,64 @@
       log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${info.nextRevision}.`, 'success');
       if (wantDxf && body.dxfMissing) {
         flagMissingDxf(part, number);
-        showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
-        return;
+        if (!quiet) showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
+        return 'updated';
       }
       if (missingDxf) {
         if (found) found.missing = false;
         log(`${number} had no DXF in LUNA, so one was added.`, 'success');
       }
-      showToast(`\u2713 ${number} updated (rev ${info.nextRevision})`, 3000);
+      if (!quiet) showToast(`\u2713 ${number} updated (rev ${info.nextRevision})`, 3000);
+      return 'updated';
     } catch (err) {
       for (const note of (err.body && err.body.notes) || []) log(note, 'error');
       log(`Couldn't update ${number}: ${err.message}`, 'error');
-      showToast(`Update failed: ${err.message}`, 6000);
+      if (!quiet) showToast(`Update failed: ${err.message}`, 6000);
+      updateAll.lastError = err;
+      return 'failed';
     } finally {
       updatingFiles.delete(part.partId);
+      if (state.screen === 'list') renderPartList();
+    }
+  }
+
+  // UPDATE ALL: goes through every part already in LUNA, one at a time,
+  // and fixes whatever doesn't carry the part's number: RENUMBER for linked
+  // parts with a wrong number, the drawing tab's name, and a fresh drawing
+  // PDF in LUNA when the newest one has an old name (or there's none).
+  // Parts that already match are skipped, so they cost no Onshape calls.
+  var updateAll = { running: false, summary: '', lastError: null };
+  async function updateAllFiles() {
+    if (updateAll.running) return;
+    const parts = state.parts.filter((p) => isUploaded(p) && p.group !== 'hardware' && p.group !== 'block');
+    if (!parts.length) return;
+    updateAll.running = true;
+    updateAll.summary = '';
+    const counts = { updated: 0, skipped: 0, failed: 0 };
+    try {
+      await loadDrawings();
+      for (let i = 0; i < parts.length; i += 1) {
+        updateAll.summary = `Checking ${i + 1} of ${parts.length}\u2026`;
+        renderPartList();
+        updateAll.lastError = null;
+        const result = await updateLunaFiles(parts[i], { onlyIfNeeded: true, quiet: true });
+        counts[result] = (counts[result] || 0) + 1;
+        // A logged-out panel fails every part, so stop and say so.
+        const err = updateAll.lastError;
+        if (err && (err.status === 401 || /login expired|reconnect/i.test(err.message || ''))) {
+          updateAll.summary = 'Stopped: the Onshape login expired. Close and reopen the panel, then press UPDATE ALL again.';
+          return;
+        }
+        if (err && (err.status === 402 || /limit/i.test(err.message || ''))) {
+          updateAll.summary = `Stopped: ${err.message}`;
+          return;
+        }
+      }
+      updateAll.summary = `Done: ${counts.updated} updated, ${counts.skipped} already right${counts.failed ? `, ${counts.failed} failed (see the log)` : ''}.`;
+      log(updateAll.summary, counts.failed ? 'error' : 'success');
+      showToast(`\u2713 ${counts.updated} updated, ${counts.skipped} already right`, 5000);
+    } finally {
+      updateAll.running = false;
       if (state.screen === 'list') renderPartList();
     }
   }
