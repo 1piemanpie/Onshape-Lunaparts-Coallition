@@ -1159,8 +1159,15 @@
       // Match "26O-E018 Drawing 1" or the old "E018 Drawing 1".
       const names = new Set([number, lunaNumber].map(firstWord));
       const shorts = new Set([number, lunaNumber].map((n) => shortNumber(firstWord(n))));
-      const drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
+      let drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
+      // A linked part saved before its number came in got a drawing named
+      // after its catalog name ("Shaft Drawing 1"). Use it when it's the
+      // only one, and RENUMBER renames it.
+      if (!drawing && part.linked) {
+        const byName = (state.drawings || []).filter((d) => String(d.name || '').replace(/\s+Drawing\s+\d+$/i, '').trim().toLowerCase() === String(part.name || '').trim().toLowerCase());
+        if (byName.length === 1) drawing = byName[0];
+      }
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
@@ -1175,7 +1182,10 @@
         state.uploaded.add(number.toUpperCase());
         if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
         log(`Renumbered ${lunaNumber} to ${number} in LUNA Parts.`, 'success');
-        if (drawing) {
+      }
+      // A linked part's drawing tab that isn't named after its number (an
+      // old number, or the catalog name) is renamed to match.
+      if (part.linked && drawing && firstWord(drawing.name) !== firstWord(number)) {
           try {
             const done = await getJson('/api/onshape/renumber-drawing', {
               method: 'POST',
@@ -1187,7 +1197,6 @@
           } catch (err) {
             log(`Couldn't rename the drawing tab ${drawing.name}: ${err.message}. Rename it to start with ${number} by hand.`, 'error');
           }
-        }
       }
       // Auto-detect may say it needs a DXF it never got (e.g. box tube with
       // extra holes sent before step 4). Shape data is cached per Part Studio.
