@@ -80,6 +80,7 @@ router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partF
     const highest = files.reduce((n, f) => Math.max(n, Number(f.revision) || 1), 0);
     res.json({
       lunaPartId: part.id,
+      projectId: part.project_id,
       nextRevision: highest + 1,
       hadDxf: files.some((f) => attachmentExtension(f) === 'dxf'),
       hadStep: files.some((f) => ['step', 'stp'].includes(attachmentExtension(f))),
