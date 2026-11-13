@@ -1209,6 +1209,20 @@
         || (detect && detect.needsDxf && detect.type === 'tube')
         || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
       const wantDxf = info.hadDxf || missingDxf;
+      // No drawing tab for this part in the document (e.g. a linked part
+      // whose tab was named after its catalog name and later taken by a
+      // twin): make a fresh one under its number, so LUNA gets a drawing
+      // that matches. About 11-15 Onshape calls.
+      if (!drawing && canDraw(part)) {
+        log(`No drawing tab for ${number} in this document, so making one.`);
+        const made = await makeDrawingFor(part, {
+          partNumber: number,
+          partName: part.linked ? String(part.name || '') : '',
+          quantity: Number(part.quantity) || 1,
+          material: part.material || '',
+        });
+        if (made && !made.failed && made.drawingId) drawing = { id: made.drawingId, name: made.name };
+      }
       if (!drawing && !wantDxf && !info.hadStep) {
         // RENUMBER still did its main job (the new number in LUNA).
         if (renumber) {
