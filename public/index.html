@@ -1177,7 +1177,7 @@
         await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ partNumber: number }),
+          body: JSON.stringify({ partNumber: number, onshapePartId: part.partId }),
         });
         state.uploaded.add(number.toUpperCase());
         if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
@@ -1980,10 +1980,17 @@
     // No key match: a linked part uploaded under the same catalog name,
     // as long as no other linked part in this list already has that number.
     if (!part.linked || !state.linkedByName) return '';
-    const byName = state.linkedByName.get(String(part.name || '').trim().toLowerCase());
+    const name = String(part.name || '').trim().toLowerCase();
+    // Last resort: any LUNA part with that exact name (a linked part that
+    // was uploaded without its link), unless the number belongs to a team
+    // part in this list.
+    const byName = state.linkedByName.get(name)
+      || (state.anyByName && state.anyByName.get(name));
     if (!byName) return '';
-    const taken = (state.parts || []).some((p) => p !== part && p.linked && p.onshapeKey
-      && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === byName);
+    const upper = byName.toUpperCase();
+    const taken = (state.parts || []).some((p) => p !== part && (p.linked
+      ? p.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === byName
+      : String(p.name || '').trim().toUpperCase() === upper));
     return taken ? '' : byName;
   }
 
@@ -2057,6 +2064,7 @@
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
       state.linkedByName = new Map(Object.entries(body.linkedByName || {}));
+      state.anyByName = new Map(Object.entries(body.anyByName || {}));
       if (state.screen === 'list') renderPartList();
     } catch (err) {
       log(err.message, 'error');

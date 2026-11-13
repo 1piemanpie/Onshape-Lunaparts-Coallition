@@ -66,10 +66,20 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
       if (!tagged || !name || !number) continue;
       byName[name] = name in byName && byName[name] !== number ? null : number;
     }
+    // Every LUNA part by name, for linked parts that were uploaded without
+    // their link at all (the panel only uses it when nothing else fits).
+    const anyName = {};
+    for (const p of parts) {
+      const name = String(p.name || '').trim().toLowerCase();
+      const number = String(p.part_number || '').trim();
+      if (!name || !number) continue;
+      anyName[name] = name in anyName && anyName[name] !== number ? null : number;
+    }
     res.json({
       partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
       linked,
       linkedByName: Object.fromEntries(Object.entries(byName).filter(([, n]) => n)),
+      anyByName: Object.fromEntries(Object.entries(anyName).filter(([, n]) => n)),
     });
   } catch (err) {
     console.error('LUNA Parts part-number list failed:', err);
@@ -166,7 +176,7 @@ router.post('/api/luna/dxf-check', requireLogin, requirePanel, validate('body', 
 // fields sent back, so the part is read first.
 router.post('/api/luna/parts/:id/number', requireLogin,
   validate('params', schemas.lunaIdParams), validate('body', schemas.renumberBody), async (req, res) => {
-  const { id, partNumber: number } = req.input;
+  const { id, partNumber: number, onshapePartId } = req.input;
   try {
     const got = await lunaRequest(`parts/${id}`);
     if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
@@ -177,9 +187,22 @@ router.post('/api/luna/parts/:id/number', requireLogin,
       && String(p.part_number || '').trim().toUpperCase() === number.toUpperCase());
     if (clash) return res.status(409).json({ error: `${clash.part_number} already exists in this project ("${clash.name}"), so ${part.part_number} wasn't renamed.` });
     const fields = { part_number: number };
-    for (const key of ['name', 'description', 'parent_part_id', 'part_status_id', 'tool_id', 'type', 'material',
+    for (const key of ['name', 'description', 'external_ref', 'parent_part_id', 'part_status_id', 'tool_id', 'type', 'material',
       'material_thickness_id', 'priority', 'notes', 'quantity', 'cut_length', 'lead_time_days']) {
       if (part[key] !== null && part[key] !== undefined) fields[key] = part[key];
+    }
+    // A linked part that was uploaded without its link gets it now, so the
+    // panel finds it by its key from then on (not just by name).
+    if (!fields.external_ref && onshapePartId && /^a[0-9a-f]{12}$/.test(onshapePartId) && req.session.onshapeContext) {
+      try {
+        const list = await getAssemblyParts(req, { reuse: true });
+        const linkedPart = list.byId.get(onshapePartId);
+        const ctx = req.session.onshapeContext;
+        const key = linkedPart && !isLocalSource(ctx, linkedPart.source) && linkedPartKey(ctx, linkedPart.source, linkedPart.partId);
+        if (key && `onshape:${key}`.length <= 400) fields.external_ref = `onshape:${key}`;
+      } catch (err) {
+        console.error('Linked part lookup for renumber failed:', err.message);
+      }
     }
     if (!fields.part_status_id && part.status && part.status.id) fields.part_status_id = part.status.id;
     const put = await lunaRequest(`parts/${id}`, { method: 'PUT', json: fields });
