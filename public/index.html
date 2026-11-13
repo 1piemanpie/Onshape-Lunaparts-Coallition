@@ -1183,10 +1183,6 @@
         if (byName.length === 1) drawing = byName[0];
       }
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
-      if (onlyIfNeeded && !renumber && drawing && firstWord(drawing.name) === firstWord(number)
-        && firstWord(info.drawingFile) === firstWord(number) && number.toUpperCase() === lunaNumber.toUpperCase()) {
-        return 'skipped';
-      }
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
         // Onshape part) and files all stay, so nothing else breaks.
@@ -1203,18 +1199,30 @@
       }
       // A drawing tab that isn't named after the part's number (an old
       // number like E018, or a linked part's catalog name) is renamed to match.
-      if (drawing && firstWord(drawing.name) !== firstWord(number)) {
+      // Linked parts' drawings are also checked for a stale number box (a
+      // drawing made as "Shaft", or before a RENUMBER): 2 Onshape calls,
+      // and only a box that's wrong gets written.
+      let drawingChanged = false;
+      if (drawing && (firstWord(drawing.name) !== firstWord(number) || part.linked)) {
           try {
             const done = await getJson('/api/onshape/renumber-drawing', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ drawingId: drawing.id, partNumber: number }),
             });
-            if (done.renamed) { drawing.name = done.name; log(`Renamed its drawing tab to ${done.name}.`, 'success'); }
-            else log(`Rename the drawing tab ${drawing.name} to start with ${number} by hand.`, 'error');
+            drawingChanged = Boolean(done.changed);
+            if (done.renamed && done.name !== drawing.name) { drawing.name = done.name; log(`Renamed its drawing tab to ${done.name}.`, 'success'); }
+            else if (!done.renamed) log(`Rename the drawing tab ${drawing.name} to start with ${number} by hand.`, 'error');
+            if (done.numberChanged) log(`Set the drawing's number box to ${number}.`, 'success');
           } catch (err) {
             log(`Couldn't rename the drawing tab ${drawing.name}: ${err.message}. Rename it to start with ${number} by hand.`, 'error');
           }
+      }
+      // UPDATE ALL leaves alone a part whose tab, number box and newest PDF
+      // in LUNA all already carry its number.
+      if (onlyIfNeeded && !renumber && !drawingChanged && drawing && firstWord(drawing.name) === firstWord(number)
+        && firstWord(info.drawingFile) === firstWord(number) && number.toUpperCase() === lunaNumber.toUpperCase()) {
+        return 'skipped';
       }
       // Auto-detect may say it needs a DXF it never got (e.g. box tube with
       // extra holes sent before step 4). Shape data is cached per Part Studio.
