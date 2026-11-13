@@ -191,6 +191,9 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/luna/parts', { projectId: 5, name: 'Linked shaft', partNumber: '26O-E060', statusId: 1, type: 'part', quantity: 1, onshapePartId: linked.partId }],
     ['POST', '/api/luna/parts/11/attachments', { partId: linked.partId, partNumber: '26O-E007', wantStep: true }],
     ['POST', '/api/luna/dxf-check', { parts: [{ partId: local.partId, number: '26O-E001' }] }],
+    // RENUMBER: the drawing tab "26OE-001 Drawing 1" becomes "26O-E037 Drawing 1".
+    ['POST', '/api/onshape/renumber-drawing', { drawingId: DRW, partNumber: '26O-E037' }],
+    ['POST', '/api/onshape/renumber-drawing', { drawingId: 'nothex', partNumber: '26O-E037' }],
     ['GET', '/api/usage'],
   ];
   for (const [m, p, b] of more) await rec(`asm ${m} ${p} ${b ? JSON.stringify(b).slice(0, 120) : ''}`, a, m, p, b);

@@ -11,7 +11,7 @@ const {
   derivedPartIds, withBlockCad, ownerViaFeatureScript, partGroup, isLocalSource, linkedPartKey,
   getAssemblyParts, resolvePart, PART_CACHE_MAX_AGE_MS, partBox, partShape, partMassProps, sameShape, stablePartKey,
 } = require('../lib/onshape/parts');
-const { fillPartProperties, fillDrawingNumber, filledTitleBlocks, fillTitleBlock } = require('../lib/onshape/title-block');
+const { fillPartProperties, fillDrawingNumber, filledTitleBlocks, fillTitleBlock, renumberDrawing } = require('../lib/onshape/title-block');
 const { runTranslation } = require('../lib/onshape/exports');
 const { getProjectParts } = require('../lib/luna');
 const { isPlanar } = require('../lib/dxf');
@@ -568,6 +568,25 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
     // anyone waiting asks again rather than waiting forever.
     finish.reject(new Error('Drawing request ended.'));
     if (drawingsInFlight.get(flightKey) === flight) drawingsInFlight.delete(flightKey);
+  }
+});
+
+// RENUMBER: a part that went to LUNA with the wrong number (26OE-001) gets a
+// new one; its drawing tab is renamed and its number box set to match.
+router.post('/api/onshape/renumber-drawing', requirePanel, validate('body', schemas.renumberDrawingBody), async (req, res) => {
+  const ctx = req.session.onshapeContext;
+  const { drawingId, partNumber } = req.input;
+  try {
+    const done = await renumberDrawing(req, ctx, drawingId, partNumber);
+    // Keep the saved tab list in step, so the Drawing picker shows the new name.
+    const list = elementLists.get(docKeyOf(ctx));
+    const tabs = list ? await list.value.catch(() => null) : null;
+    const tab = tabs && tabs.find((t) => t.id === drawingId);
+    if (tab && done.renamed) tab.name = done.name;
+    res.json(done);
+  } catch (err) {
+    console.error('Renumbering the drawing failed:', err.message);
+    res.status(502).json({ error: err.status ? onshapeErrorMessage(err) : err.message });
   }
 });
 

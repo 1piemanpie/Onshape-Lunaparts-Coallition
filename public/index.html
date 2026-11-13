@@ -1080,9 +1080,12 @@
         update.type = 'button';
         update.className = 'see';
         const addDxf = dxfResult && dxfResult.missing;
-        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : (addDxf ? 'ADD DXF' : 'UPDATE FILES');
+        const renumber = needsRenumber(part);
+        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : (renumber ? 'RENUMBER' : addDxf ? 'ADD DXF' : 'UPDATE FILES');
         update.disabled = updatingFiles.has(part.partId);
-        update.title = 'Upload this part\u2019s drawing PDF (and DXF/STEP if it had them) to LUNA Parts again, as the next revision';
+        update.title = renumber
+          ? `${lunaNumberOf(part)} isn\u2019t in the team format. Give it the next free number in LUNA Parts, rename its drawing to match and send the drawing again`
+          : 'Upload this part\u2019s drawing PDF (and DXF/STEP if it had them) to LUNA Parts again, as the next revision';
         update.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -1135,11 +1138,19 @@
   }
 
   // ---- Update files of a part already in LUNA --------------------------------
+  // A linked part whose LUNA number isn't in the team format (26OE-001 from a
+  // mistyped prefix) gets RENUMBER instead of UPDATE FILES.
+  function needsRenumber(part) {
+    const n = part.linked ? lunaNumberFor(part) : '';
+    return Boolean(n) && !TEAM_NUMBER.test(n);
+  }
+
   const updatingFiles = new Set();
   async function updateLunaFiles(part) {
     const lunaNumber = lunaNumberOf(part) || part.name;
+    const renumber = needsRenumber(part);
     // A local part renamed in Onshape after upload gets its new name in LUNA too.
-    const number = part.linked ? lunaNumber : part.name;
+    let number = part.linked ? lunaNumber : part.name;
     updatingFiles.add(part.partId);
     renderPartList();
     try {
@@ -1151,6 +1162,33 @@
       const drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
+      if (renumber) {
+        // Same LUNA part, new number: its id, notes tag (the link to this
+        // Onshape part) and files all stay, so nothing else breaks.
+        number = await nextNumberForLinked(info.projectId);
+        if (!TEAM_NUMBER.test(number)) throw new Error(`the next number came out as ${number}. Open NAME, set the prefix (like 26O-E) and name a part, then try again.`);
+        await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ partNumber: number }),
+        });
+        state.uploaded.add(number.toUpperCase());
+        if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
+        log(`Renumbered ${lunaNumber} to ${number} in LUNA Parts.`, 'success');
+        if (drawing) {
+          try {
+            const done = await getJson('/api/onshape/renumber-drawing', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ drawingId: drawing.id, partNumber: number }),
+            });
+            if (done.renamed) { drawing.name = done.name; log(`Renamed its drawing tab to ${done.name}.`, 'success'); }
+            else log(`Rename the drawing tab ${drawing.name} to start with ${number} by hand.`, 'error');
+          } catch (err) {
+            log(`Couldn't rename the drawing tab ${drawing.name}: ${err.message}. Rename it to start with ${number} by hand.`, 'error');
+          }
+        }
+      }
       // Auto-detect may say it needs a DXF it never got (e.g. box tube with
       // extra holes sent before step 4). Shape data is cached per Part Studio.
       let shape = null;
@@ -1163,7 +1201,7 @@
         || (detect && detect.type === 'plate' && guessToolIsCnc(part)));
       const wantDxf = info.hadDxf || missingDxf;
       if (!drawing && !wantDxf && !info.hadStep) throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
-      if (number.toUpperCase() !== lunaNumber.toUpperCase()) {
+      if (!renumber && number.toUpperCase() !== lunaNumber.toUpperCase()) {
         await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1687,7 +1725,6 @@
         if (prefix !== this.prefix()) return; // typed again meanwhile
         this.next = body.next;
         this.lunaHighest = body.lunaHighest || 0;
-        try { localStorage.setItem(this.prefixKey(), prefix); } catch (err) { /* storage blocked */ }
         this.render();
       } catch (err) {
         this.message(err.message, 'bad');
@@ -1779,6 +1816,9 @@
         this.message(`Put back ${newName}.`);
       } else {
         this.named.push({ partId, oldName, newName, keepNext });
+        // Remembered only once a part is really named with it, so a prefix
+        // half-typed in the box (like "26OE-") is never kept by mistake.
+        try { localStorage.setItem(this.prefixKey(), this.prefix()); } catch (err) { /* storage blocked */ }
         if (!keepNext) this.next += 1;
         this.message(`${oldName} \u2192 ${newName}${keepNext ? ' (same shape as a part already numbered)' : ''}`);
         showToast(`\u2713 Named ${newName}`);
@@ -1948,8 +1988,33 @@
   // Next free team number for a linked part's card. Numbers handed out in
   // this batch are skipped, since their uploads may not have finished yet.
   const givenNumbers = new Set();
+  // The prefix a linked part's number continues. Linked parts belong with
+  // the team-numbered parts around them, so the prefix most of those use
+  // (26O-E for 26O-E001...E036) wins over the one remembered from the NAME
+  // box, which could be a stale or mistyped one (26OE- gave 26OE-001 when
+  // the list was already up to 26O-E036). Only when nothing in the list has
+  // a team number does the remembered prefix count.
+  function linkedPrefix(projectId) {
+    const saved = namer.savedPrefix();
+    const project = (state.projects || []).find((p) => String(p.id) === String(projectId || ''));
+    const projectPrefix = project && project.prefix ? String(project.prefix).toUpperCase() : '';
+    const all = new Map(); const inProject = new Map();
+    for (const p of state.parts || []) {
+      if (p.linked) continue;
+      const name = String(p.name || '').trim().toUpperCase();
+      if (!TEAM_NUMBER.test(name)) continue;
+      const m = name.match(/^(.*?)(\d+)$/);
+      if (!m) continue;
+      all.set(m[1], (all.get(m[1]) || 0) + 1);
+      if (projectPrefix && m[1].startsWith(projectPrefix)) inProject.set(m[1], (inProject.get(m[1]) || 0) + 1);
+    }
+    // Prefer the prefixes that fit the card's LUNA project, if any do.
+    const counts = inProject.size ? inProject : all;
+    if (counts.has(saved) || !counts.size) return saved;
+    return [...counts].sort((a, b) => b[1] - a[1])[0][0];
+  }
   async function nextNumberForLinked(projectId) {
-    const prefix = namer.savedPrefix();
+    const prefix = linkedPrefix(projectId);
     const query = new URLSearchParams({ prefix });
     if (projectId) query.set('project_id', projectId);
     const body = await getJson(`/api/onshape/next-number?${query}`);
@@ -2466,8 +2531,16 @@
     const choice = drawingSelect.value;
     let drawing;
     if (choice === NO_DRAWING || !canDraw(onshapePart)) drawing = { state: 'none' };
-    else if (choice) drawing = { state: 'ready', id: choice, name: (drawingSelect.selectedOptions[0] || {}).textContent || 'Drawing' };
-    else drawing = { state: 'making' };
+    else if (choice) {
+      const chosenName = (drawingSelect.selectedOptions[0] || {}).textContent || 'Drawing';
+      // The part's own drawing tab (made earlier, e.g. a batch that stopped
+      // when the Onshape login expired) goes through the drawing maker too:
+      // it finds the tab, makes nothing new, but fills the title block's
+      // name and number, which a run that stopped part way may have missed.
+      drawing = firstWord(chosenName) === firstWord(number)
+        ? { state: 'making' }
+        : { state: 'ready', id: choice, name: chosenName };
+    } else drawing = { state: 'making' };
     // Saving again with the same drawing keeps what we knew about it.
     if (before && before.drawing.id && before.drawing.id === drawing.id) drawing = before.drawing;
     if (before && before.drawing.state === 'making' && drawing.state === 'making') drawing = before.drawing;
