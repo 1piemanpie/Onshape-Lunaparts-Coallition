@@ -9,6 +9,7 @@ const {
 const { safeFileName, buildDxf, exportStep, exportDrawingPdf } = require('../lib/onshape/exports');
 const {
   lunaRequest, lunaGetAll, attachmentExtension, getOptions, getStatuses, getParts, getProjectParts,
+  drawingStatus, forgetDrawingInfo,
 } = require('../lib/luna');
 const { REAM_UNDERSIZE_IN } = require('../lib/dxf');
 const { requireLogin, requirePanel, requireLunaKey, validate } = require('../lib/middleware');
@@ -120,6 +121,35 @@ router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partF
   } catch (err) {
     console.error('LUNA Parts file lookup failed:', err);
     res.status(502).json({ error: 'Could not read the part from LUNA Parts.' });
+  }
+});
+
+// Which parts in LUNA have no drawing, checked when the panel opens. It looks
+// at every part in the projects this document's parts are in (plus the
+// chosen project), so parts that aren't in the open assembly show up too.
+// LUNA calls only (one attachments list per part, kept 10 minutes), no
+// Onshape calls. Bought parts and assemblies are left out.
+router.post('/api/luna/drawing-check', requireLogin, validate('body', schemas.drawingCheckBody), async (req, res) => {
+  const { numbers, projectId, only } = req.input;
+  try {
+    const lunaParts = await getParts();
+    const wanted = new Set(numbers);
+    const mine = lunaParts.filter((p) => wanted.has(String(p.part_number || '').trim().toUpperCase()));
+    let checked;
+    if (only) {
+      checked = mine;
+    } else {
+      const projectIds = new Set(mine.map((p) => p.project_id));
+      if (projectId) projectIds.add(projectId);
+      checked = lunaParts.filter((p) => projectIds.has(p.project_id));
+    }
+    const { projects } = await getOptions().catch(() => ({ projects: [] }));
+    const projectName = new Map((projects || []).map((p) => [p.id, p.name]));
+    const parts = (await drawingStatus(checked)).map((p) => ({ ...p, projectName: projectName.get(p.projectId) || '' }));
+    res.json({ parts });
+  } catch (err) {
+    console.error('LUNA Parts drawing check failed:', err);
+    res.status(502).json({ error: 'Could not check LUNA Parts for drawings.' });
   }
 });
 
@@ -435,6 +465,7 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
       }
 
       const lunaRes = await lunaRequest(`parts/${lunaPartId}/attachments`, { method: 'POST', body: form });
+      forgetDrawingInfo(lunaPartId);
       if (!lunaRes.ok) {
         const body = await lunaRes.json().catch(() => ({}));
         console.error('LUNA Parts attachment upload failed:', lunaRes.status, body);
