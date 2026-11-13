@@ -47,3 +47,16 @@ test('hex shaft drawing: overall + effective length, across flats, snap ring not
   assert.ok(notes.includes('View Snap Ring Standard'));
   assert.ok(notes.includes('1/4-20 TAP'));
 });
+
+test('hex shaft with the ring filling the groove (no groove face) still gets its effective length', () => {
+  const IN = 0.0254;
+  const body = JSON.parse(JSON.stringify(shaft.body));
+  // Drop the groove floor faces (0.468" round), as a fused ring would.
+  body.faces = body.faces.filter((f) => {
+    const s = f.surface || {};
+    return !(String(s.type).toLowerCase() === 'cylinder' && Math.abs(s.radius * 2 / IN - 0.468) < 0.002);
+  });
+  const info = analyzePart(body, shaft.box);
+  assert.strictEqual(info.type, 'hex');
+  assert.ok(info.effective && Math.abs(info.effective - 2.5) < 0.01, `effective ${info.effective}`);
+});
