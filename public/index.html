@@ -1411,7 +1411,14 @@
     recheck.type = 'button';
     recheck.className = 'see';
     recheck.textContent = 'CHECK AGAIN';
-    recheck.addEventListener('click', () => { drawingCheck.summary = ''; checkDrawings(); });
+    recheck.title = 'Reload the parts in this assembly from Onshape (a part you just added shows up), then ask LUNA Parts again';
+    // Parts reloaded first, so a part just inserted into the assembly moves
+    // up to IN THIS ASSEMBLY. loadParts runs the check again when it's done.
+    recheck.addEventListener('click', () => {
+      drawingCheck.summary = '';
+      drawingCheck.started = false;
+      loadParts(true);
+    });
     again.append(note, recheck);
     list.appendChild(again);
   }
