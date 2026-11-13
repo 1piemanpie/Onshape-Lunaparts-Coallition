@@ -1481,17 +1481,14 @@
       // ALL reads the list once, before it starts).
       if (!quiet) await loadDrawings();
       // Match "26O-E018 Drawing 1" or the old "E018 Drawing 1".
-      const names = new Set([number, lunaNumber].map(firstWord));
-      const shorts = new Set([number, lunaNumber].map((n) => shortNumber(firstWord(n))));
+      const real = [number, lunaNumber].map(firstWord).filter(looksLikePartNumber);
+      const names = new Set(real);
+      const shorts = new Set(real.map(shortNumber));
       let drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
-      // A linked part saved before its number came in got a drawing named
-      // after its catalog name ("Shaft Drawing 1"). Use it when it's the
-      // only one, and RENUMBER renames it.
-      if (!drawing && part.linked) {
-        const byName = (state.drawings || []).filter((d) => String(d.name || '').replace(/\s+Drawing\s+\d+$/i, '').trim().toLowerCase() === String(part.name || '').trim().toLowerCase());
-        if (byName.length === 1) drawing = byName[0];
-      }
+      // A tab named after a catalog name ("Shaft Drawing 1") is never used:
+      // twins share that name, and one once got the other's drawing. With no
+      // tab under its number, a fresh drawing is made from the part below.
       // A drawing tab picked by hand in the No drawing box wins.
       const picked = drawingPick.get(part.partId);
       if (picked) drawing = (state.drawings || []).find((d) => d.id === picked) || drawing;
@@ -3604,11 +3601,20 @@
 
   // Drawings are named after their part ("E05 Drawing 1" for part E05), so
   // pick the drawing whose first word matches the part name's first word.
+  // Only a real part number counts (26O-E040, E05): catalog names like
+  // "Shaft" are shared by different parts.
   function pickDrawingFor(partName) {
     const key = firstWord(partName);
-    const match = (state.drawings || []).find((d) => firstWord(d.name) === key);
+    const match = looksLikePartNumber(key) && (state.drawings || []).find((d) => firstWord(d.name) === key);
     drawingSelect.value = match ? match.id : '';
     if (match) log(`Drawing matched: ${match.name}`);
+  }
+
+  // Same rule as the server: letters and digits (and dashes), never
+  // "Shaft" or 0.196".
+  function looksLikePartNumber(number) {
+    const first = String(number || '').trim().split(/\s+/)[0];
+    return /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/.test(first) && /[A-Za-z]/.test(first) && /\d/.test(first);
   }
 
   function firstWord(text) {
