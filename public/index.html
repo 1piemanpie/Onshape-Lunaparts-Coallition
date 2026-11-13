@@ -2518,6 +2518,15 @@
   cardProjectSelect.addEventListener('change', checkNumber);
 
   function saveCard() {
+    // A linked part's number is filled in a moment after its card opens.
+    // Saving before then named its drawing after the catalog part ("Shaft
+    // Drawing 1") instead of its number, so wait for it.
+    const linkedNow = currentPart();
+    if (linkedNow && linkedNow.linked && !el('partNumberInput').value.trim()) {
+      showHint('Still finding the next number for this linked part. Wait a second, or type the number, then press SAVE & NEXT.', 'bad');
+      el('partNumberInput').focus();
+      return;
+    }
     const problem = numberProblem();
     const typed = `${currentPartId()}|${el('partNumberInput').value.trim()}|${cardProjectSelect.value}`;
     if (problem && numberConfirmed !== typed) {
