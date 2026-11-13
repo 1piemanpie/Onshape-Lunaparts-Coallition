@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/api.test.js test/drawings.test.js test/square-up.test.js test/luna-sync.test.js",
+    "test": "node --test test/api.test.js test/drawings.test.js test/square-up.test.js test/luna-sync.test.js test/luna-drawings.test.js",
     "test:update": "node --test test/api.test.js"
   },
   "engines": {

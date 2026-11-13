@@ -255,6 +255,18 @@
   .part-row.found .part-sub, .part-row.found .qty { color: #e4e4e7; }
   /* Assembly hardware sits under a fold at the bottom of the list. */
   .hw-fold { border-top: 1px solid var(--line); }
+  /* Parts in LUNA with no drawing: a red box above the list. */
+  .nodraw { border: 1px solid var(--bad); border-radius: 8px; margin: 0 0 10px; font-size: 12px; }
+  .nodraw[hidden] { display: none; }
+  .nodraw-head { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; color: var(--bad); font-weight: 600; }
+  .nodraw-head span { flex: 1; min-width: 0; }
+  .nodraw-head.ok { color: var(--good); }
+  .nodraw-list { border-top: 1px solid var(--line); }
+  .nodraw-row { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+  .nodraw-row:last-child { border-bottom: 0; }
+  .nodraw-row .part-text { flex: 1; }
+  .nodraw-row select { font-size: 11px; max-width: 120px; }
+  .nodraw-group { padding: 5px 10px 2px; font-family: var(--heading); font-weight: 700; font-size: 11px; letter-spacing: 0.08em; color: var(--muted); }
   .dxf-check { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
   .design-packs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .design-packs a { text-decoration: none; }
@@ -402,6 +414,8 @@
       <span id="stagedText"></span>
       <button id="reviewBtn" type="button">CHECK &amp; UPLOAD &rarr;</button>
     </div>
+    <!-- Parts in LUNA Parts that have no drawing yet (checked on open). -->
+    <div id="drawingBar" class="nodraw" hidden></div>
     <div id="partList" class="part-list"><p class="chip-empty">Loading parts&hellip;</p></div>
   </section>
 
@@ -899,6 +913,7 @@
       mergeSameNamed();
       renderPartList();
       loadTwins();
+      maybeCheckDrawings();
       log(`${body.parts.length} parts loaded from this ${state.kind === 'assembly' ? 'assembly' : 'Part Studio'} in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
     } catch (err) {
       // Kept, so a later redraw shows the reason instead of "Loading parts".
@@ -1011,6 +1026,13 @@
         line.textContent = `\u26a0 No DXF in LUNA, but it needs one (${dxfResult.why}). Tap ADD DXF.`;
         text.appendChild(line);
       }
+      const noDrawing = missingDrawing(part);
+      if (noDrawing) {
+        const line = document.createElement('span');
+        line.className = 'twin ask';
+        line.textContent = '\u26a0 No drawing in LUNA Parts. Tap ADD DRAWING.';
+        text.appendChild(line);
+      }
       for (const twin of twinInfos(part)) {
         const line = document.createElement('span');
         const others = twin.others.map((p) => p.name).join(', ');
@@ -1081,7 +1103,7 @@
         update.className = 'see';
         const addDxf = dxfResult && dxfResult.missing;
         const renumber = needsRenumber(part);
-        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : (renumber ? 'RENUMBER' : addDxf ? 'ADD DXF' : 'UPDATE FILES');
+        update.textContent = updatingFiles.has(part.partId) ? 'UPDATING\u2026' : (renumber ? 'RENUMBER' : addDxf ? 'ADD DXF' : noDrawing ? 'ADD DRAWING' : 'UPDATE FILES');
         update.disabled = updatingFiles.has(part.partId);
         update.title = renumber
           ? `${lunaNumberOf(part)} isn\u2019t in the team format. Give it the next free number in LUNA Parts, rename its drawing to match and send the drawing again`
@@ -1089,7 +1111,8 @@
         update.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
-          updateLunaFiles(part);
+          if (noDrawing) addDrawing(part);
+          else updateLunaFiles(part);
         });
       }
 
@@ -1101,6 +1124,283 @@
     if (folds.hardware) list.appendChild(folds.hardware);
     updateListFooter();
     renderStagedBar();
+    renderDrawingBar();
+  }
+
+  // ---- Parts in LUNA with no drawing ---------------------------------------
+  // Checked once when the panel opens, from LUNA Parts only (no Onshape
+  // calls): every part in the projects this document's parts are in. Parts
+  // in this assembly get ADD DRAWING (uses their drawing tab, or a tab picked
+  // by hand, or makes a new one, then sends it to LUNA). Parts that aren't in
+  // this assembly are listed so you know to open the document they're in.
+  // Hardware, COTS, block CAD and LUNA's Purchased parts never need one.
+  const drawingCheck = { started: false, running: false, error: '', byNumber: new Map(), adding: false, summary: '', open: true };
+  const drawingPick = new Map(); // Onshape part id -> drawing tab id chosen by hand
+
+  function needsDrawing(part) {
+    return isUploaded(part) && !part.manualCots && part.group !== 'hardware' && part.group !== 'block';
+  }
+
+  function missingDrawing(part) {
+    if (!needsDrawing(part)) return false;
+    const row = drawingCheck.byNumber.get(lunaNumberOf(part).toUpperCase());
+    return Boolean(row && row.hasDrawing === false);
+  }
+
+  function maybeCheckDrawings() {
+    if (drawingCheck.started || !state.partsLoaded || !state.uploaded || !state.context) return;
+    checkDrawings();
+  }
+
+  async function checkDrawings() {
+    if (drawingCheck.running) return;
+    drawingCheck.started = true;
+    drawingCheck.running = true;
+    drawingCheck.error = '';
+    renderDrawingBar();
+    try {
+      const numbers = [...new Set(state.parts.map((p) => lunaNumberOf(p)).filter(Boolean))];
+      const body = await getJson('/api/luna/drawing-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numbers, projectId: projectSelect.value || null }),
+      });
+      drawingCheck.byNumber = new Map(body.parts.map((r) => [r.number.toUpperCase(), r]));
+      const missing = body.parts.filter((r) => r.hasDrawing === false);
+      log(missing.length
+        ? `No drawing in LUNA Parts: ${missing.map((r) => r.number).join(', ')}.`
+        : `Every part checked in LUNA Parts has a drawing (${body.parts.length} parts).`, missing.length ? 'error' : 'success');
+    } catch (err) {
+      drawingCheck.error = err.message;
+      log(`Couldn't check LUNA Parts for drawings: ${err.message}`, 'error');
+    } finally {
+      drawingCheck.running = false;
+      if (state.screen === 'list') renderPartList();
+    }
+  }
+
+  // Asks LUNA again about just these numbers (after ADD DRAWING).
+  async function recheckDrawings(numbers) {
+    try {
+      const body = await getJson('/api/luna/drawing-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numbers, only: true }),
+      });
+      for (const r of body.parts) drawingCheck.byNumber.set(r.number.toUpperCase(), r);
+    } catch (err) { /* the row keeps its old state */ }
+  }
+
+  // Drawing tabs that don't belong to any part in this list by name, so
+  // they can be picked for a part whose own tab isn't found by its number.
+  function spareDrawingTabs() {
+    const taken = new Set();
+    for (const p of state.parts) {
+      for (const n of [lunaNumberOf(p), p.name]) {
+        if (!n) continue;
+        taken.add(firstWord(n));
+        taken.add(shortNumber(firstWord(n)).toLowerCase());
+      }
+    }
+    return (state.drawings || []).filter((d) => !taken.has(firstWord(d.name)) && !taken.has(shortNumber(firstWord(d.name)).toLowerCase()));
+  }
+
+  function hasOwnDrawingTab(part) {
+    const keys = new Set();
+    for (const n of [lunaNumberOf(part), part.name]) {
+      if (!n) continue;
+      keys.add(firstWord(n));
+      keys.add(shortNumber(firstWord(n)).toLowerCase());
+    }
+    return (state.drawings || []).some((d) => keys.has(firstWord(d.name)) || keys.has(shortNumber(firstWord(d.name)).toLowerCase()));
+  }
+
+  // ADD DRAWING: the same as UPDATE FILES (its drawing tab, or a new one,
+  // sent to LUNA as the next revision), then LUNA is asked again.
+  async function addDrawing(part) {
+    await updateLunaFiles(part);
+    const number = lunaNumberOf(part);
+    if (number) await recheckDrawings([number]);
+    drawingPick.delete(part.partId);
+    if (state.screen === 'list') renderPartList();
+    return !missingDrawing(part);
+  }
+
+  async function addAllDrawings() {
+    if (drawingCheck.adding) return;
+    const parts = state.parts.filter(missingDrawing);
+    if (!parts.length) return;
+    drawingCheck.adding = true;
+    let added = 0;
+    let failedInARow = 0;
+    try {
+      for (let i = 0; i < parts.length; i += 1) {
+        drawingCheck.summary = `Adding drawing ${i + 1} of ${parts.length}…`;
+        renderDrawingBar();
+        if (await addDrawing(parts[i])) { added += 1; failedInARow = 0; }
+        else failedInARow += 1;
+        // Two in a row failing usually means the Onshape login or the API
+        // limit, which would fail the rest too.
+        if (failedInARow >= 2 && i < parts.length - 1) {
+          drawingCheck.summary = `Stopped after two failed in a row (see the log). ${added} added.`;
+          return;
+        }
+      }
+      const left = state.parts.filter(missingDrawing).length;
+      drawingCheck.summary = left ? `${added} added, ${left} still without one (see the log).` : `✓ ${added} drawing${added === 1 ? '' : 's'} added.`;
+      showToast(`✓ ${added} drawing${added === 1 ? '' : 's'} added`, 4000);
+    } finally {
+      drawingCheck.adding = false;
+      if (state.screen === 'list') renderPartList();
+    }
+  }
+
+  function renderDrawingBar() {
+    const bar = el('drawingBar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    if (!state.partsLoaded || !drawingCheck.started) { bar.hidden = true; return; }
+    const head = document.createElement('div');
+    head.className = 'nodraw-head';
+    const title = document.createElement('span');
+    head.appendChild(title);
+    bar.appendChild(head);
+    bar.hidden = false;
+    if (drawingCheck.running) {
+      title.textContent = 'Checking LUNA Parts for parts with no drawing…';
+      return;
+    }
+    if (drawingCheck.error) {
+      title.textContent = `Couldn’t check for missing drawings. ${drawingCheck.error}`;
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'see';
+      again.textContent = 'TRY AGAIN';
+      again.addEventListener('click', () => checkDrawings());
+      head.appendChild(again);
+      return;
+    }
+    // Numbers that belong to a part in this list (even hardware), so a LUNA
+    // part is either "here" or "somewhere else", never both.
+    const here = new Set(state.parts.map((p) => lunaNumberOf(p).toUpperCase()).filter(Boolean));
+    const mine = state.parts.filter(missingDrawing);
+    const elsewhere = [...drawingCheck.byNumber.values()].filter((r) => r.hasDrawing === false && !here.has(r.number.toUpperCase()));
+    const total = mine.length + elsewhere.length;
+    if (!total) {
+      if (!drawingCheck.summary) { bar.hidden = true; return; }
+      head.classList.add('ok');
+      title.textContent = drawingCheck.summary;
+      return;
+    }
+    title.textContent = `⚠ ${total} part${total === 1 ? '' : 's'} in LUNA ${total === 1 ? 'has' : 'have'} no drawing`
+      + (drawingCheck.summary ? ` · ${drawingCheck.summary}` : '');
+    if (mine.length) {
+      const all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'see';
+      all.textContent = drawingCheck.adding ? 'ADDING…' : `ADD ALL (${mine.length})`;
+      all.disabled = drawingCheck.adding;
+      all.title = 'Give every part below that is in this assembly a drawing: its own drawing tab if it has one, otherwise a new one (about 11-15 Onshape calls each), then send it to LUNA Parts.';
+      all.addEventListener('click', () => addAllDrawings());
+      head.appendChild(all);
+    }
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'see';
+    toggle.textContent = drawingCheck.open ? 'HIDE' : 'SHOW';
+    toggle.addEventListener('click', () => { drawingCheck.open = !drawingCheck.open; renderDrawingBar(); });
+    head.appendChild(toggle);
+    if (!drawingCheck.open) return;
+
+    const list = document.createElement('div');
+    list.className = 'nodraw-list';
+    bar.appendChild(list);
+    const spare = spareDrawingTabs();
+    if (mine.length) {
+      const group = document.createElement('div');
+      group.className = 'nodraw-group';
+      group.textContent = 'IN THIS ASSEMBLY';
+      list.appendChild(group);
+    }
+    for (const part of mine) {
+      const row = document.createElement('div');
+      row.className = 'nodraw-row';
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = lunaNumberOf(part);
+      const sub = document.createElement('span');
+      sub.className = 'part-sub';
+      const ownTab = hasOwnDrawingTab(part);
+      sub.textContent = ownTab ? 'Has a drawing tab here: ADD sends it' : 'No drawing tab yet: ADD makes one';
+      text.append(name, sub);
+      row.appendChild(text);
+      // No tab named after it, but there are tabs nobody owns: let one be picked.
+      if (!ownTab && spare.length) {
+        const pick = document.createElement('select');
+        pick.title = 'Use a drawing tab that is already in this document';
+        const make = document.createElement('option');
+        make.value = '';
+        make.textContent = 'Make a new one';
+        pick.appendChild(make);
+        for (const d of spare) {
+          const option = document.createElement('option');
+          option.value = d.id;
+          option.textContent = d.name;
+          pick.appendChild(option);
+        }
+        pick.value = drawingPick.get(part.partId) || '';
+        pick.addEventListener('change', () => {
+          if (pick.value) drawingPick.set(part.partId, pick.value);
+          else drawingPick.delete(part.partId);
+          sub.textContent = pick.value ? 'ADD sends the picked tab' : 'No drawing tab yet: ADD makes one';
+        });
+        row.appendChild(pick);
+      }
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'see';
+      add.textContent = updatingFiles.has(part.partId) ? 'ADDING…' : 'ADD';
+      add.disabled = updatingFiles.has(part.partId) || drawingCheck.adding;
+      add.addEventListener('click', () => addDrawing(part));
+      row.appendChild(add);
+      list.appendChild(row);
+    }
+    if (elsewhere.length) {
+      const group = document.createElement('div');
+      group.className = 'nodraw-group';
+      group.textContent = 'NOT IN THIS ASSEMBLY: OPEN THE ONE THEY’RE IN';
+      list.appendChild(group);
+    }
+    for (const r of elsewhere) {
+      const row = document.createElement('div');
+      row.className = 'nodraw-row';
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = r.number || '(no number)';
+      const sub = document.createElement('span');
+      sub.className = 'part-sub';
+      sub.textContent = [r.name, r.projectName].filter(Boolean).join(' · ');
+      text.append(name, sub);
+      row.appendChild(text);
+      list.appendChild(row);
+    }
+    const again = document.createElement('div');
+    again.className = 'nodraw-row';
+    const note = document.createElement('span');
+    note.className = 'part-sub';
+    note.style.flex = '1';
+    note.textContent = 'Bought parts, hardware and COTS don’t need one, so they aren’t listed.';
+    const recheck = document.createElement('button');
+    recheck.type = 'button';
+    recheck.className = 'see';
+    recheck.textContent = 'CHECK AGAIN';
+    recheck.addEventListener('click', () => { drawingCheck.summary = ''; checkDrawings(); });
+    again.append(note, recheck);
+    list.appendChild(again);
   }
 
   // ---- Find parts in LUNA that are missing their DXF -------------------------
@@ -1168,6 +1468,9 @@
         const byName = (state.drawings || []).filter((d) => String(d.name || '').replace(/\s+Drawing\s+\d+$/i, '').trim().toLowerCase() === String(part.name || '').trim().toLowerCase());
         if (byName.length === 1) drawing = byName[0];
       }
+      // A drawing tab picked by hand in the No drawing box wins.
+      const picked = drawingPick.get(part.partId);
+      if (picked) drawing = (state.drawings || []).find((d) => d.id === picked) || drawing;
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
@@ -2091,6 +2394,7 @@
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
       state.lunaByName = new Map(Object.entries(body.byName || {}));
       if (state.screen === 'list') renderPartList();
+      maybeCheckDrawings();
     } catch (err) {
       log(err.message, 'error');
     }
