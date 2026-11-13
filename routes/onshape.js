@@ -506,7 +506,14 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
     // A linked part's own properties can't be changed, so its name box is
     // filled from the drawing tab's Title 1 instead (fillDrawingNumber below).
 
+    // A part at an angle is drawn from a turned copy in its own assembly tab;
+    // reuse that tab if an earlier try made it.
+    const helperName = `${partNumber.split(/\s+/)[0]} squared`;
+    const helper = elements.find((e) => e.elementType === 'ASSEMBLY' && e.name === helperName);
+
     const result = await makeDrawing({
+      helperName,
+      existingHelper: helper ? helper.id : null,
       api: (path, options) => onshapeFetch(req, path, options),
       ctx,
       reference,
@@ -528,6 +535,7 @@ router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.
       const tabs = await list.value.catch(() => null);
       if (tabs) {
         tabs.push({ id: result.drawingId, name: result.name, elementType: 'DRAWING' });
+        if (result.helperId && !tabs.some((t) => t.id === result.helperId)) tabs.push({ id: result.helperId, name: helperName, elementType: 'ASSEMBLY' });
         list.madeAt = Date.now();
         list.stamp = 'made-here';
       }
