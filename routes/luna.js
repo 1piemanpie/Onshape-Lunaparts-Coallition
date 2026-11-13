@@ -36,6 +36,15 @@ router.get('/api/luna/options', requireLogin, requireLunaKey, async (req, res) =
   }
 });
 
+// Names compared loosely: case, spacing, and curly or HTML-escaped quotes
+// (0.5" can come back as 0.5&quot; or 0.5″) don't count.
+function normName(name) {
+  return String(name || '')
+    .replace(/&quot;|&#0*34;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&amp;/gi, '&')
+    .replace(/[\u201C\u201D\u2033]/g, '"').replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 // Read-only: every part number already in LUNA, so the panel can fold away
 // parts that have been uploaded.
 router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
@@ -53,33 +62,24 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
       const number = String(p.part_number || '').trim();
       if (m && number && !linked[m[1]]) linked[m[1]] = number;
     }
-    // Linked parts by name too, for when a part's key no longer matches (a
-    // row of same-shape copies can be shown by a different copy, from
-    // another FRC Design App insert, after the panel reloads). The name is
-    // the catalog name the card filled in. Names used by two LUNA parts are
-    // left out, since they can't tell which is which.
+    // LUNA parts by name, for linked parts whose key doesn't match (a row
+    // of same-shape copies can be shown by a different copy after a reload)
+    // or that were uploaded without their link at all. The panel picks among
+    // them (its own project first, linked ones first) and only uses a name
+    // that points at one number.
     const byName = {};
     for (const p of parts) {
-      const tagged = EXTERNAL_REF.test(String(p.external_ref || '')) || ONSHAPE_TAG.test(String(p.notes || ''));
-      const name = String(p.name || '').trim().toLowerCase();
-      const number = String(p.part_number || '').trim();
-      if (!tagged || !name || !number) continue;
-      byName[name] = name in byName && byName[name] !== number ? null : number;
-    }
-    // Every LUNA part by name, for linked parts that were uploaded without
-    // their link at all (the panel only uses it when nothing else fits).
-    const anyName = {};
-    for (const p of parts) {
-      const name = String(p.name || '').trim().toLowerCase();
+      const name = normName(p.name);
       const number = String(p.part_number || '').trim();
       if (!name || !number) continue;
-      anyName[name] = name in anyName && anyName[name] !== number ? null : number;
+      const tagged = EXTERNAL_REF.test(String(p.external_ref || '')) || ONSHAPE_TAG.test(String(p.notes || ''));
+      const list = byName[name] || (byName[name] = []);
+      if (list.length < 20) list.push({ number, projectId: p.project_id, tagged });
     }
     res.json({
       partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
       linked,
-      linkedByName: Object.fromEntries(Object.entries(byName).filter(([, n]) => n)),
-      anyByName: Object.fromEntries(Object.entries(anyName).filter(([, n]) => n)),
+      byName,
     });
   } catch (err) {
     console.error('LUNA Parts part-number list failed:', err);

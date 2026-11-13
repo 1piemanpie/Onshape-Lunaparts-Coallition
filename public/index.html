@@ -1979,19 +1979,31 @@
     if (byKey) return byKey;
     // No key match: a linked part uploaded under the same catalog name,
     // as long as no other linked part in this list already has that number.
-    if (!part.linked || !state.linkedByName) return '';
-    const name = String(part.name || '').trim().toLowerCase();
-    // Last resort: any LUNA part with that exact name (a linked part that
-    // was uploaded without its link), unless the number belongs to a team
-    // part in this list.
-    const byName = state.linkedByName.get(name)
-      || (state.anyByName && state.anyByName.get(name));
-    if (!byName) return '';
-    const upper = byName.toUpperCase();
-    const taken = (state.parts || []).some((p) => p !== part && (p.linked
-      ? p.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === byName
-      : String(p.name || '').trim().toUpperCase() === upper));
-    return taken ? '' : byName;
+    if (!part.linked || !state.lunaByName) return '';
+    let found = state.lunaByName.get(normName(part.name)) || [];
+    // Not a number a team part in this list goes by, or one another linked
+    // part already has by its key.
+    found = found.filter((c) => !(state.parts || []).some((p) => p !== part && (p.linked
+      ? p.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === c.number
+      : String(p.name || '').trim().toUpperCase() === c.number.toUpperCase())));
+    // The same catalog part may be in other robots' projects too: prefer
+    // this panel's project, then parts uploaded as linked parts.
+    const project = projectSelect && projectSelect.value;
+    for (const narrow of [(c) => project && String(c.projectId) === String(project), (c) => c.tagged]) {
+      const fewer = found.filter(narrow);
+      if (fewer.length) found = fewer;
+    }
+    const numbers = [...new Set(found.map((c) => c.number))];
+    return numbers.length === 1 ? numbers[0] : '';
+  }
+
+  // Same loose name comparison as the server (case, spacing, curly or
+  // HTML-escaped quotes don't count).
+  function normName(name) {
+    return String(name || '')
+      .replace(/&quot;|&#0*34;/gi, '"').replace(/&#0*39;|&apos;/gi, "'").replace(/&amp;/gi, '&')
+      .replace(/[\u201C\u201D\u2033]/g, '"').replace(/[\u2018\u2019\u2032]/g, "'")
+      .replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
   // "26O-E018" -> "E018": the number without the year/robot prefix.
@@ -2063,8 +2075,7 @@
       const body = await getJson('/api/luna/part-numbers');
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
-      state.linkedByName = new Map(Object.entries(body.linkedByName || {}));
-      state.anyByName = new Map(Object.entries(body.anyByName || {}));
+      state.lunaByName = new Map(Object.entries(body.byName || {}));
       if (state.screen === 'list') renderPartList();
     } catch (err) {
       log(err.message, 'error');
