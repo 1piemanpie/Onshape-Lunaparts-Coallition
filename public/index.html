@@ -543,6 +543,17 @@
     <div id="reviewList" class="part-list"></div>
   </section>
 
+  <!-- ---- Check updates before they go to LUNA (UPDATE FILES / UPDATE ALL) ---- -->
+  <section id="updatesScreen" hidden>
+    <div class="card-head">
+      <button id="updatesBackBtn" class="link" type="button">&larr; Parts</button>
+      <span id="updatesCount" class="badge"></span>
+    </div>
+    <h2 class="card-title">Check updates</h2>
+    <p class="hint left review-help">Nothing has been sent to LUNA Parts yet. OPEN each drawing and check it shows the right part: number, Qty and length. Fix it in Onshape if needed, then tick OK. SEND puts only the ticked parts' files in LUNA as the next revision.</p>
+    <div id="updatesList" class="part-list"></div>
+  </section>
+
   <!-- ---- Screen 4: what happened ---- -->
   <section id="doneScreen" hidden>
     <h2 id="doneTitle" class="card-title">Done</h2>
@@ -571,6 +582,9 @@
   </div>
   <div id="reviewFooter" class="footer-row" hidden>
     <button id="uploadAllBtn" class="btn" type="button" disabled>&#8593; UPLOAD ALL</button>
+  </div>
+  <div id="updatesFooter" class="footer-row" hidden>
+    <button id="sendUpdatesBtn" class="btn" type="button" disabled>&#8593; SEND TO LUNA</button>
   </div>
   <div id="doneFooter" class="footer-row" hidden>
     <button id="againBtn" class="btn" type="button">BACK TO PARTS</button>
@@ -750,7 +764,7 @@
 
   // ---- Screens -------------------------------------------------------------
   function showScreen(name) {
-    for (const s of ['list', 'card', 'review', 'done']) {
+    for (const s of ['list', 'card', 'review', 'updates', 'done']) {
       el(`${s}Screen`).hidden = s !== name;
       el(`${s}Footer`).hidden = s !== name;
     }
@@ -986,7 +1000,14 @@
       const note = document.createElement('span');
       note.className = 'part-sub';
       note.textContent = [updateAll.summary, dxfCheck.summary].filter(Boolean).join(' ');
-      bar.append(all, find, note);
+      const waiting = pendingUpdates.filter((u) => !u.sent).length;
+      const check = document.createElement('button');
+      check.type = 'button';
+      check.className = 'see';
+      check.textContent = `CHECK ${waiting} UPDATE${waiting === 1 ? '' : 'S'}`;
+      check.title = 'New drawings waiting for your OK before they go to LUNA Parts';
+      check.addEventListener('click', (event) => { event.preventDefault(); showUpdates(); });
+      bar.append(all, ...(waiting ? [check] : []), find, note);
       uploadedFold.appendChild(bar);
       if (dxfCheck.running || dxfCheck.summary || updateAll.running || updateAll.summary) uploadedFold.open = true;
     }
@@ -1122,7 +1143,7 @@
           event.preventDefault();
           event.stopPropagation();
           if (noDrawing) addDrawing(part);
-          else updateLunaFiles(part);
+          else updateLunaFiles(part).then((r) => { if (r === 'staged') showUpdates(); });
         });
       }
 
@@ -1228,7 +1249,8 @@
   // ADD DRAWING: the same as UPDATE FILES (its drawing tab, or a new one,
   // sent to LUNA as the next revision), then LUNA is asked again.
   async function addDrawing(part) {
-    await updateLunaFiles(part);
+    // The new drawing waits on Check updates; LUNA is asked again once it's sent.
+    if (await updateLunaFiles(part) === 'staged') { showUpdates(); return false; }
     const number = lunaNumberOf(part);
     if (number) await recheckDrawings([number]);
     drawingPick.delete(part.partId);
@@ -1469,7 +1491,7 @@
   // { onlyIfNeeded: true } (UPDATE ALL) skips a part whose drawing tab and
   // newest drawing PDF in LUNA already carry its number. Returns 'updated',
   // 'skipped' or 'failed'.
-  async function updateLunaFiles(part, { onlyIfNeeded = false, quiet = false } = {}) {
+  async function updateLunaFiles(part, { onlyIfNeeded = false, quiet = false, review = true } = {}) {
     const lunaNumber = lunaNumberOf(part) || part.name;
     const renumber = needsRenumber(part);
     // A local part renamed in Onshape after upload gets its new name in LUNA too.
@@ -1481,17 +1503,14 @@
       // ALL reads the list once, before it starts).
       if (!quiet) await loadDrawings();
       // Match "26O-E018 Drawing 1" or the old "E018 Drawing 1".
-      const names = new Set([number, lunaNumber].map(firstWord));
-      const shorts = new Set([number, lunaNumber].map((n) => shortNumber(firstWord(n))));
+      const real = [number, lunaNumber].map(firstWord).filter(looksLikePartNumber);
+      const names = new Set(real);
+      const shorts = new Set(real.map(shortNumber));
       let drawing = (state.drawings || []).find((d) => names.has(firstWord(d.name)))
         || (state.drawings || []).find((d) => shorts.has(shortNumber(firstWord(d.name))));
-      // A linked part saved before its number came in got a drawing named
-      // after its catalog name ("Shaft Drawing 1"). Use it when it's the
-      // only one, and RENUMBER renames it.
-      if (!drawing && part.linked) {
-        const byName = (state.drawings || []).filter((d) => String(d.name || '').replace(/\s+Drawing\s+\d+$/i, '').trim().toLowerCase() === String(part.name || '').trim().toLowerCase());
-        if (byName.length === 1) drawing = byName[0];
-      }
+      // A tab named after a catalog name ("Shaft Drawing 1") is never used:
+      // twins share that name, and one once got the other's drawing. With no
+      // tab under its number, a fresh drawing is made from the part below.
       // A drawing tab picked by hand in the No drawing box wins.
       const picked = drawingPick.get(part.partId);
       if (picked) drawing = (state.drawings || []).find((d) => d.id === picked) || drawing;
@@ -1580,33 +1599,19 @@
         state.uploaded.add(number.toUpperCase());
         log(`Renamed ${lunaNumber} to ${number} in LUNA Parts to match Onshape.`, 'success');
       }
-      const body = await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/attachments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          partId: part.partId,
-          faceId: dxfFaceFor(part),
-          dxfSides: dxfSidesFor(part),
-          drawingId: drawing ? drawing.id : null,
-          wantDxf,
-          wantStep: info.hadStep,
-          partNumber: number,
-          revision: info.nextRevision,
-        }),
-      });
-      for (const note of body.notes || []) log(note, 'error');
-      log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${info.nextRevision}.`, 'success');
-      if (wantDxf && body.dxfMissing) {
-        flagMissingDxf(part, number);
-        if (!quiet) showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
-        return 'updated';
+      const item = {
+        part, number, lunaPartId: info.lunaPartId, revision: info.nextRevision,
+        drawing: drawing ? { id: drawing.id, name: drawing.name } : null,
+        wantDxf, missingDxf, wantStep: info.hadStep, found, ok: false, error: '', sent: false,
+      };
+      // Files wait on the Check updates screen until they're ticked OK.
+      if (review) {
+        const at = pendingUpdates.findIndex((u) => u.part.partId === part.partId);
+        if (at >= 0) pendingUpdates[at] = item; else pendingUpdates.push(item);
+        log(`${number} is ready to check before it goes to LUNA.`);
+        return 'staged';
       }
-      if (missingDxf) {
-        if (found) found.missing = false;
-        log(`${number} had no DXF in LUNA, so one was added.`, 'success');
-      }
-      if (!quiet) showToast(`\u2713 ${number} updated (rev ${info.nextRevision})`, 3000);
-      return 'updated';
+      return await sendUpdate(item, { quiet });
     } catch (err) {
       for (const note of (err.body && err.body.notes) || []) log(note, 'error');
       log(`Couldn't update ${number}: ${err.message}`, 'error');
@@ -1616,6 +1621,166 @@
     } finally {
       updatingFiles.delete(part.partId);
       if (state.screen === 'list') renderPartList();
+    }
+  }
+
+  // Sends one part's new files (drawing PDF, DXF, STEP) to LUNA as the next
+  // revision. Returns 'updated'.
+  async function sendUpdate(item, { quiet = false } = {}) {
+    const { part, number } = item;
+    const body = await getJson(`/api/luna/parts/${encodeURIComponent(item.lunaPartId)}/attachments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        partId: part.partId,
+        faceId: dxfFaceFor(part),
+        dxfSides: dxfSidesFor(part),
+        drawingId: item.drawing ? item.drawing.id : null,
+        wantDxf: item.wantDxf,
+        wantStep: item.wantStep,
+        partNumber: number,
+        revision: item.revision,
+      }),
+    });
+    for (const note of body.notes || []) log(note, 'error');
+    log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${item.revision}.`, 'success');
+    if (item.wantDxf && body.dxfMissing) {
+      flagMissingDxf(part, number);
+      if (!quiet) showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
+      return 'updated';
+    }
+    if (item.missingDxf) {
+      if (item.found) item.found.missing = false;
+      log(`${number} had no DXF in LUNA, so one was added.`, 'success');
+    }
+    if (!quiet) showToast(`\u2713 ${number} updated (rev ${item.revision})`, 3000);
+    return 'updated';
+  }
+
+  // ---- Check updates ---------------------------------------------------------
+  // UPDATE FILES / UPDATE ALL / ADD DRAWING make or rename drawings in Onshape,
+  // then wait here. Nothing goes to LUNA until a part is ticked OK and SEND is
+  // pressed. Kept in memory only: after a reload, UPDATE ALL finds them again
+  // (their newest LUNA PDF still has the old name), with no new drawings.
+  var pendingUpdates = [];
+  var sendingUpdates = false;
+
+  function showUpdates() {
+    clearHighlight();
+    showScreen('updates');
+    renderUpdates();
+  }
+
+  function renderUpdates() {
+    const list = el('updatesList');
+    list.innerHTML = '';
+    const waiting = pendingUpdates.filter((u) => !u.sent);
+    el('updatesCount').textContent = `${waiting.length} to check`;
+    if (!pendingUpdates.length) list.innerHTML = '<p class="chip-empty">Nothing waiting. Press UPDATE FILES or UPDATE ALL in the ALREADY IN LUNA PARTS fold.</p>';
+    for (const u of pendingUpdates) {
+      const row = document.createElement('div');
+      row.className = u.ok || u.sent ? 'part-row review-row on' : 'part-row review-row';
+      const okLabel = document.createElement('label');
+      okLabel.className = 'ok';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = u.ok || u.sent;
+      box.disabled = u.sent || sendingUpdates;
+      box.title = 'I opened the drawing and it shows this part';
+      box.addEventListener('change', () => { u.ok = box.checked; renderUpdates(); });
+      const okText = document.createElement('span');
+      okText.textContent = u.sent ? 'SENT' : 'OK';
+      okLabel.append(box, okText);
+
+      const text = document.createElement('span');
+      text.className = 'part-text';
+      const name = document.createElement('span');
+      name.className = 'part-name';
+      name.textContent = `${u.number} \u00b7 ${u.part.name}`;
+      const info = document.createElement('span');
+      info.className = 'part-sub';
+      const d = u.part.detect;
+      const size = d && d.sawCut ? `cut to ${d.sawCut.cutTo}` : (d && d.summary) || '';
+      info.textContent = [`Qty ${u.part.quantity || 1}`, size, u.part.material || '',
+        `rev ${u.revision}`, u.wantDxf ? 'DXF' : '', u.wantStep ? 'STEP' : ''].filter(Boolean).join(' \u00b7 ');
+      const draw = document.createElement('span');
+      draw.className = u.drawing ? 'part-sub' : 'part-sub bad';
+      draw.textContent = u.drawing ? `Drawing: ${u.drawing.name}. Check its Qty and length match this part.` : 'No drawing tab, so only the other files go.';
+      text.append(name, info, draw);
+      if (u.error) {
+        const err = document.createElement('span');
+        err.className = 'part-sub bad';
+        err.textContent = u.error;
+        text.appendChild(err);
+      }
+
+      const btns = document.createElement('span');
+      btns.className = 'review-btns';
+      if (u.drawing && state.context) {
+        const open = document.createElement('a');
+        open.className = 'see';
+        open.href = drawingUrl(u.drawing.id);
+        open.target = '_blank';
+        open.rel = 'noopener';
+        open.textContent = 'OPEN';
+        open.title = 'Open the drawing in a new browser tab. Come back to this tab when you\u2019re done.';
+        btns.appendChild(open);
+      }
+      if (!u.sent) {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'see';
+        remove.textContent = 'SKIP';
+        remove.title = 'Don\u2019t send this one (the Onshape drawing stays). Fix the drawing, then press UPDATE FILES on the part again.';
+        remove.disabled = sendingUpdates;
+        remove.addEventListener('click', () => {
+          pendingUpdates = pendingUpdates.filter((x) => x !== u);
+          log(`Skipped ${u.number}: nothing sent to LUNA.`);
+          renderUpdates();
+        });
+        btns.appendChild(remove);
+      }
+      row.append(okLabel, text, btns);
+      list.appendChild(row);
+    }
+    const ticked = waiting.filter((u) => u.ok).length;
+    const button = el('sendUpdatesBtn');
+    button.disabled = sendingUpdates || !ticked;
+    button.textContent = sendingUpdates ? 'SENDING\u2026' : `\u2191 SEND ${ticked} TO LUNA`;
+  }
+
+  async function sendCheckedUpdates() {
+    if (sendingUpdates) return;
+    sendingUpdates = true;
+    const sent = [];
+    try {
+      for (const u of pendingUpdates.filter((x) => x.ok && !x.sent)) {
+        renderUpdates();
+        u.error = '';
+        try {
+          await sendUpdate(u, { quiet: true });
+          u.sent = true;
+          sent.push(u.number);
+        } catch (err) {
+          for (const note of (err.body && err.body.notes) || []) log(note, 'error');
+          u.error = `Not sent: ${err.message}`;
+          log(`Couldn't update ${u.number}: ${err.message}`, 'error');
+          if (err.status === 401 || err.status === 402) break;
+        }
+      }
+    } finally {
+      sendingUpdates = false;
+      renderUpdates();
+    }
+    if (sent.length) {
+      showToast(`\u2713 Sent ${sent.length} to LUNA`, 4000);
+      recheckDrawings(sent).catch(() => {});
+    }
+    // All done: back to the list, with the sent ones cleared.
+    if (pendingUpdates.every((u) => u.sent)) {
+      pendingUpdates = [];
+      showScreen('list');
+      renderPartList();
     }
   }
 
@@ -1631,7 +1796,7 @@
     if (!parts.length) return;
     updateAll.running = true;
     updateAll.summary = '';
-    const counts = { updated: 0, skipped: 0, failed: 0 };
+    const counts = { updated: 0, skipped: 0, failed: 0, staged: 0 };
     try {
       await loadDrawings();
       for (let i = 0; i < parts.length; i += 1) {
@@ -1651,9 +1816,10 @@
           return;
         }
       }
-      updateAll.summary = `Done: ${counts.updated} updated, ${counts.skipped} already right${counts.failed ? `, ${counts.failed} failed (see the log)` : ''}.`;
+      updateAll.summary = `Done: ${counts.staged} to check, ${counts.skipped} already right${counts.failed ? `, ${counts.failed} failed (see the log)` : ''}.`;
       log(updateAll.summary, counts.failed ? 'error' : 'success');
-      showToast(`\u2713 ${counts.updated} updated, ${counts.skipped} already right`, 5000);
+      showToast(`\u2713 ${counts.staged} to check, ${counts.skipped} already right`, 5000);
+      if (counts.staged) setTimeout(showUpdates, 0);
     } finally {
       updateAll.running = false;
       if (state.screen === 'list') renderPartList();
@@ -3604,11 +3770,20 @@
 
   // Drawings are named after their part ("E05 Drawing 1" for part E05), so
   // pick the drawing whose first word matches the part name's first word.
+  // Only a real part number counts (26O-E040, E05): catalog names like
+  // "Shaft" are shared by different parts.
   function pickDrawingFor(partName) {
     const key = firstWord(partName);
-    const match = (state.drawings || []).find((d) => firstWord(d.name) === key);
+    const match = looksLikePartNumber(key) && (state.drawings || []).find((d) => firstWord(d.name) === key);
     drawingSelect.value = match ? match.id : '';
     if (match) log(`Drawing matched: ${match.name}`);
+  }
+
+  // Same rule as the server: letters and digits (and dashes), never
+  // "Shaft" or 0.196".
+  function looksLikePartNumber(number) {
+    const first = String(number || '').trim().split(/\s+/)[0];
+    return /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/.test(first) && /[A-Za-z]/.test(first) && /\d/.test(first);
   }
 
   function firstWord(text) {
@@ -3666,6 +3841,8 @@
   el('reviewBtn').addEventListener('click', showReview);
   el('reviewBackBtn').addEventListener('click', () => { showScreen('list'); renderPartList(); });
   el('uploadAllBtn').addEventListener('click', uploadChecked);
+  el('sendUpdatesBtn').addEventListener('click', sendCheckedUpdates);
+  el('updatesBackBtn').addEventListener('click', () => { showScreen('list'); renderPartList(); });
   el('backBtn').addEventListener('click', () => {
     clearHighlight();
     showScreen('list');

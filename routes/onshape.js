@@ -403,6 +403,13 @@ const drawingsInFlight = new Map();
 // to check them for views again.
 const drawingsMadeHere = new Set();
 
+// A part number's first word has letters and digits (and dashes) only:
+// 26O-E040 or E05, never "Shaft" or 0.196".
+function looksLikePartNumber(number) {
+  const first = String(number || '').trim().split(/\s+/)[0];
+  return /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/.test(first) && /[A-Za-z]/.test(first) && /\d/.test(first);
+}
+
 function drawingJson(req, ctx) {
   return async (drawingEid) => JSON.parse(String(await runTranslation(req,
     `/drawings/d/${ctx.documentId}/w/${ctx.workspaceId}/e/${drawingEid}/translations`,
@@ -412,6 +419,13 @@ function drawingJson(req, ctx) {
 router.post('/api/onshape/make-drawing', requirePanel, validate('body', schemas.makeDrawingBody), async (req, res) => {
   const ctx = req.session.onshapeContext;
   const { partId, partNumber, quantity: qty, material, partName, force, check } = req.input;
+  // Drawing tabs are found by their name's first word, so that word must be
+  // a real part number (26O-E040, or the old E05). A catalog name like
+  // "Shaft" or '0.196" ID Spacer' is shared by different parts, and once
+  // handed one twin's drawing to another (26O-E040 got E039's shaft).
+  if (!looksLikePartNumber(partNumber)) {
+    return res.status(400).json({ error: `"${partNumber.split(/\s+/)[0]}" isn't a part number yet, so no drawing was made. Give the part its number (like 26O-E040) first.` });
+  }
 
   const flightKey = `${ctx.documentId}:${partNumber.split(/\s+/)[0].toUpperCase()}`;
   const running = !force && drawingsInFlight.get(flightKey);

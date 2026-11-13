@@ -93,6 +93,9 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'bad id', partNumber: '1' }],
     ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: 'x'.repeat(81) }],
+    // A catalog name isn't a part number: refused, never matched to a tab.
+    ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: 'Shaft' }],
+    ['POST', '/api/onshape/make-drawing', { partId: 'JHH', partNumber: '0.196" ID Spacer' }],
     ['GET', '/api/luna/options'],
     ['GET', '/api/luna/part-numbers'],
     ['GET', '/api/luna/part-files?number=26o-e001'],
