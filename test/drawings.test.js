@@ -60,3 +60,15 @@ test('hex shaft with the ring filling the groove (no groove face) still gets its
   assert.strictEqual(info.type, 'hex');
   assert.ok(info.effective && Math.abs(info.effective - 2.5) < 0.01, `effective ${info.effective}`);
 });
+
+test('drawing notes have Qty and Material but no "Cut to ... on bandsaw" line', () => {
+  const info = analyzePart(shaft.body, shaft.box);
+  const plan = planDrawing(info, { qty: 6, material: 'Aluminum' });
+  assert.ok(plan.notes.includes('Qty: 6 PCS'));
+  assert.ok(plan.notes.includes('Material: Aluminum'));
+  assert.ok(!plan.notes.some((n) => /cut to|bandsaw/i.test(n)), plan.notes.join(' | '));
+  for (const type of ['tube', 'round']) {
+    const p = planDrawing({ ...info, type, material: 'Aluminum', extraHoles: [] }, { qty: 6, material: 'Aluminum' });
+    assert.ok(!p.notes.some((n) => /cut to|bandsaw/i.test(n)), `${type}: ${p.notes.join(' | ')}`);
+  }
+});
