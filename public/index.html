@@ -1268,14 +1268,21 @@
 
   // ADD DRAWING: the same as UPDATE FILES (its drawing tab, or a new one,
   // sent to LUNA as the next revision), then LUNA is asked again.
-  async function addDrawing(part) {
+  // Returns 'staged' (waiting on Check updates), 'added' or 'failed'.
+  // { batch: true } (ADD ALL) leaves opening Check updates to the caller,
+  // so the batch keeps going instead of stopping at the first staged one.
+  async function addDrawing(part, { batch = false } = {}) {
     // The new drawing waits on Check updates; LUNA is asked again once it's sent.
-    if (await updateLunaFiles(part) === 'staged') { showUpdates(); return false; }
+    const result = await updateLunaFiles(part, { quiet: batch });
+    if (result === 'staged') {
+      if (!batch) showUpdates();
+      return 'staged';
+    }
     const number = lunaNumberOf(part);
     if (number) await recheckDrawings([number]);
     drawingPick.delete(part.partId);
     if (state.screen === 'list') renderPartList();
-    return !missingDrawing(part);
+    return missingDrawing(part) ? 'failed' : 'added';
   }
 
   async function addAllDrawings() {
@@ -1284,26 +1291,36 @@
     if (!parts.length) return;
     drawingCheck.adding = true;
     let added = 0;
+    let staged = 0;
     let failedInARow = 0;
     try {
+      // Read the drawing tabs once for the whole batch (1 Onshape call), like
+      // UPDATE ALL, instead of once per part.
+      await loadDrawings();
       for (let i = 0; i < parts.length; i += 1) {
         drawingCheck.summary = `Adding drawing ${i + 1} of ${parts.length}…`;
         renderDrawingBar();
-        if (await addDrawing(parts[i])) { added += 1; failedInARow = 0; }
+        const result = await addDrawing(parts[i], { batch: true });
+        // A drawing waiting on Check updates counts as progress, not a failure.
+        if (result === 'staged') { staged += 1; failedInARow = 0; }
+        else if (result === 'added') { added += 1; failedInARow = 0; }
         else failedInARow += 1;
         // Two in a row failing usually means the Onshape login or the API
         // limit, which would fail the rest too.
         if (failedInARow >= 2 && i < parts.length - 1) {
-          drawingCheck.summary = `Stopped after two failed in a row (see the log). ${added} added.`;
+          drawingCheck.summary = `Stopped after two failed in a row (see the log). ${staged} to check, ${added} added.`;
           return;
         }
       }
-      const left = state.parts.filter(missingDrawing).length;
-      drawingCheck.summary = left ? `${added} added, ${left} still without one (see the log).` : `✓ ${added} drawing${added === 1 ? '' : 's'} added.`;
-      showToast(`✓ ${added} drawing${added === 1 ? '' : 's'} added`, 4000);
+      const failed = parts.length - staged - added;
+      drawingCheck.summary = staged
+        ? `${staged} drawing${staged === 1 ? '' : 's'} to check${failed ? `, ${failed} failed (see the log)` : ''}. Tick them OK on Check updates to send them.`
+        : failed ? `${added} added, ${failed} still without one (see the log).` : `✓ ${added} drawing${added === 1 ? '' : 's'} added.`;
+      showToast(staged ? `✓ ${staged} drawing${staged === 1 ? '' : 's'} to check` : `✓ ${added} drawing${added === 1 ? '' : 's'} added`, 4000);
     } finally {
       drawingCheck.adding = false;
-      if (state.screen === 'list') renderPartList();
+      if (staged) setTimeout(showUpdates, 0);
+      else if (state.screen === 'list') renderPartList();
     }
   }
 
