@@ -161,6 +161,7 @@ globalThis.fetch = async (url, opts = {}) => {
     m = q.match(/^\/parts\/(\d+)\/attachments$/);
     if (m && method === 'GET') return page(m[1] === '11' ? [{ original_filename: 'a.pdf', revision: 2 }, { extension: 'dxf', revision: 1 }] : []);
     if (m && method === 'POST' && m[1] === '667' && opts.body.get('is_drawing')) return json({ errors: { is_drawing: ['nope'] } }, 422);
+    if (m && method === 'POST' && m[1] === '668' && !opts.body.get('is_drawing')) return json({ errors: { files: ['bad dxf'] } }, 422);
     if (m && method === 'POST') return m[1] === '666' ? json({ errors: { files: ['too big'] } }, 422) : json({ data: [] }, 201);
     return json({ unknown: q }, 404);
   }
