@@ -52,6 +52,8 @@ code, in `.env.example`, or in chat.
 
 ## Files
 
+For a full map of the code (flows, team rules, the Onshape call budget, known weak spots), see [docs/CODE-GUIDE.md](docs/CODE-GUIDE.md).
+
 | File | What it does |
 |---|---|
 | `server.js` | Starts the Express server and wires the pieces below together |
