@@ -20,6 +20,14 @@ const router = express.Router();
 // LUNA's external_ref for a part linked from another Onshape document.
 const EXTERNAL_REF = /^onshape:(\S{1,392})$/;
 
+// The LUNA part already tied to this linked part's key, if there is one
+// (by external_ref, or the old [onshape:...] notes tag).
+function lunaPartForKey(parts, key) {
+  return parts.find((p) => String(p.external_ref || '') === `onshape:${key}`)
+    || parts.find((p) => { const m = String(p.notes || '').match(ONSHAPE_TAG); return m && m[1] === key; })
+    || null;
+}
+
 // Read-only: fetches the lists the panel needs for its dropdowns. Requires
 // an Onshape login so the team's project list isn't public on this URL.
 router.get('/api/luna/options', requireLogin, requireLunaKey, async (req, res) => {
@@ -77,10 +85,35 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
       const list = byName[name] || (byName[name] = []);
       if (list.length < 20) list.push({ number, projectId: p.project_id, tagged });
     }
+    // Linked parts (spacers, shafts) that ended up in LUNA under two or
+    // more numbers in the same project, so the panel can list them to clean
+    // up. Only names where at least one copy is a linked part count: two
+    // team parts can share a typed name on purpose (left and right plates).
+    const duplicates = [];
+    const groups = new Map();
+    for (const p of parts) {
+      const name = normName(p.name);
+      const number = String(p.part_number || '').trim();
+      if (!name || !number || p.type === 'assembly') continue;
+      const key = `${p.project_id}|${name}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    }
+    for (const list of groups.values()) {
+      const numbers = [...new Set(list.map((p) => String(p.part_number).trim().toUpperCase()))];
+      const anyLinked = list.some((p) => EXTERNAL_REF.test(String(p.external_ref || '')) || ONSHAPE_TAG.test(String(p.notes || '')));
+      if (numbers.length < 2 || !anyLinked) continue;
+      duplicates.push({
+        name: String(list[0].name || ''),
+        projectId: list[0].project_id,
+        numbers: numbers.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+      });
+    }
     res.json({
       partNumbers: [...new Set(parts.map((p) => String(p.part_number || '').trim()).filter(Boolean))],
       linked,
       byName,
+      duplicates,
     });
   } catch (err) {
     console.error('LUNA Parts part-number list failed:', err);
@@ -312,6 +345,7 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
   // ties its LUNA number to it. (Parts made before LUNA had external_ref
   // carry the same key as an [onshape:...] tag in their notes instead.)
   const panelPartId = b.onshapePartId;
+  let linkKey = '';
   if (/^a[0-9a-f]{12}$/.test(panelPartId) && req.session.onshapeContext) {
     try {
       const list = await getAssemblyParts(req, { reuse: true });
@@ -319,6 +353,7 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
       const ctx = req.session.onshapeContext;
       const key = part && !isLocalSource(ctx, part.source) && linkedPartKey(ctx, part.source, part.partId);
       if (key) {
+        linkKey = key;
         const ref = `onshape:${key}`;
         // LUNA allows 400 characters; a key that long (only with a very long
         // configuration) falls back to the old notes tag.
@@ -326,13 +361,28 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
         else notes.push(`[onshape:${key}]`);
       }
     } catch (err) {
+      // Creating it without its link is how a spacer ended up with two
+      // numbers: the next panel to open couldn't tell it was in LUNA.
       console.error('Linked part lookup failed:', err.message);
+      return res.status(502).json({ error: `Couldn't check this linked part in Onshape (${err.status ? onshapeErrorMessage(err) : err.message}), so nothing was created. Try again in a moment.` });
     }
   }
 
   if (notes.length) fields.notes = notes.join('\n');
 
   try {
+    // Someone else (another computer, or this panel before a reload) may
+    // have uploaded this linked part already. Don't make a second LUNA part
+    // with a new number: tell the panel which one it is.
+    if (linkKey) {
+      const already = lunaPartForKey(await getParts(), linkKey);
+      if (already) {
+        return res.status(409).json({
+          error: `This linked part is already in LUNA Parts as ${already.part_number || `part ${already.id}`}, so it wasn't uploaded again.`,
+          alreadyIn: { id: already.id, partNumber: String(already.part_number || ''), projectId: already.project_id, key: linkKey },
+        });
+      }
+    }
     if (fields.part_number) {
       const existing = await getProjectParts(fields.project_id);
       const duplicate = existing.find((p) => p.project_id === fields.project_id
