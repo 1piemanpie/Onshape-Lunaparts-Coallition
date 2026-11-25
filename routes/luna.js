@@ -132,11 +132,22 @@ const isCncTool = (name) => /cnc|mill|router/i.test(name || '') && !/lathe/i.tes
 // revision number, and which kinds of files it has, so the same kinds are
 // sent again. LUNA calls only (no Onshape calls).
 router.get('/api/luna/part-files', requireLogin, validate('query', schemas.partFilesQuery), async (req, res) => {
-  const { number } = req.input;
+  const { number, project_id: projectId } = req.input;
   try {
     const parts = await getParts();
-    const part = parts.find((p) => String(p.part_number || '').trim().toUpperCase() === number);
-    if (!part) return res.status(404).json({ error: `${number} isn't in LUNA Parts.` });
+    // The same number can be in two projects (Arm and Elevator both with an
+    // E018). Use the panel's project when it has that number, or the only
+    // match; with two or more and none in the panel's project, don't guess.
+    const matches = parts.filter((p) => String(p.part_number || '').trim().toUpperCase() === number);
+    if (!matches.length) return res.status(404).json({ error: `${number} isn't in LUNA Parts.` });
+    const inProject = projectId ? matches.filter((p) => p.project_id === projectId) : [];
+    const pick = inProject.length ? inProject : matches;
+    if (pick.length > 1) {
+      const { projects } = await getOptions().catch(() => ({ projects: [] }));
+      const names = pick.map((p) => (projects || []).find((x) => x.id === p.project_id)).map((x, i) => (x && x.name) || `project ${pick[i].project_id}`);
+      return res.status(409).json({ error: `${number} is in more than one LUNA project (${[...new Set(names)].join(', ')}), so nothing was changed. Pick the right project at the top of the panel, then try again.` });
+    }
+    const part = pick[0];
     const [files, { tools }] = await Promise.all([lunaGetAll(`parts/${part.id}/attachments`), getOptions()]);
     const tool = (tools || []).find((t) => t.id === part.tool_id);
     const highest = files.reduce((n, f) => Math.max(n, Number(f.revision) || 1), 0);
