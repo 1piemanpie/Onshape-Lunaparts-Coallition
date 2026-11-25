@@ -1507,6 +1507,14 @@
     return Boolean(n) && !TEAM_NUMBER.test(n);
   }
 
+  // GET /api/luna/part-files for one number, with the panel's project, so a
+  // number used in two LUNA projects finds the one this document works in.
+  function partFilesUrl(number) {
+    const query = new URLSearchParams({ number });
+    if (projectSelect.value) query.set('project_id', projectSelect.value);
+    return `/api/luna/part-files?${query}`;
+  }
+
   const updatingFiles = new Set();
   // { onlyIfNeeded: true } (UPDATE ALL) skips a part whose drawing tab and
   // newest drawing PDF in LUNA already carry its number. Returns 'updated',
@@ -1534,7 +1542,7 @@
       // A drawing tab picked by hand in the No drawing box wins.
       const picked = drawingPick.get(part.partId);
       if (picked) drawing = (state.drawings || []).find((d) => d.id === picked) || drawing;
-      const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
+      const info = await getJson(partFilesUrl(lunaNumber));
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
         // Onshape part) and files all stay, so nothing else breaks.
@@ -3176,7 +3184,7 @@
     const button = el('linkBtn');
     button.disabled = true;
     try {
-      const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(number)}`);
+      const info = await getJson(partFilesUrl(number));
       const done = await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

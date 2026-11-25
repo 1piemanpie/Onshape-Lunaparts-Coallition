@@ -46,6 +46,9 @@ const lunaParts = [
   // The same spacer uploaded twice before the panel checked (no link on the second).
   { id: 15, project_id: 5, name: 'spacer', part_number: '26O-E052', part_status_id: 1, type: 'part', quantity: 4, notes: '' },
   { id: 13, project_id: 5, name: 'Elevator', part_number: '26O-E100', part_status_id: 1, type: 'assembly', quantity: 1, status: { id: 1, name: 'Design' } },
+  // The same number in two projects (UPDATE FILES must pick the right one).
+  { id: 16, project_id: 5, name: 'Arm plate', part_number: '26O-A030', part_status_id: 1, type: 'part', quantity: 1, tool_id: 2, notes: '' },
+  { id: 17, project_id: 6, name: 'Old arm plate', part_number: '26O-A030', part_status_id: 1, type: 'part', quantity: 1, tool_id: 3, notes: '' },
 ];
 
 function json(body, status = 200) {
