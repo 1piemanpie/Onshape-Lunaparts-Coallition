@@ -69,6 +69,7 @@ live only in Render's environment variables.
 | `routes/onshape.js` | 607 | Onshape routes: parts list, 3D click lookup, part shape and picture, twins, next number, rename, drawing list, **make-drawing**, renumber-drawing, `/api/usage`. |
 | `routes/luna.js` | 544 | LUNA routes: dropdown options, part numbers already used (plus linked-part matching and duplicates), part files, drawing check, DXF check, renumber in LUNA, assemblies, statuses, **create part**, **attachments** (builds/export files and uploads them). |
 | `lib/middleware.js` | 48 | `requireLogin`, `requirePanel` (sets `req.dwe`), `requireLunaKey`, `validate(source, schema)`. |
+| `lib/key-lock.js` | 29 | `withKeys(keys, job)`: runs jobs one at a time per key. Used so two uploads (or RENUMBERs) of the same project + number, or the same linked part, can't both pass the duplicate check. One server copy only. |
 | `lib/schemas.js` | 249 | zod schemas for every route's input, with the panel's error messages. |
 | `lib/session-store.js` | 35 | Redis session store when `REDIS_URL` is set. |
 | `lib/luna.js` | 331 | LUNA API client: paging, `/options` (with fallback), a synced copy of every LUNA part (`updated_since`), drawing status per part. |
