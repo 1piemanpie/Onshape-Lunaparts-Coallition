@@ -153,6 +153,8 @@ globalThis.fetch = async (url, opts = {}) => {
     if (q === '/parts' && method === 'POST') {
       const name = opts.body.get('name');
       if (name === 'bad') return json({ message: 'nope', errors: { name: ['The name is bad.'] } }, 422);
+      // Slow enough that two racing uploads overlap (see 'two creates at once').
+      if (name === 'Race plate') await new Promise((r) => setTimeout(r, 50));
       return json({ data: { id: 99, part_number: opts.body.get('part_number') || 'AUTO-1', name } }, 201);
     }
     let m = q.match(/^\/parts\/(\d+)$/);

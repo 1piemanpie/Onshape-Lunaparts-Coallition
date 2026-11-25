@@ -1268,14 +1268,21 @@
 
   // ADD DRAWING: the same as UPDATE FILES (its drawing tab, or a new one,
   // sent to LUNA as the next revision), then LUNA is asked again.
-  async function addDrawing(part) {
+  // Returns 'staged' (waiting on Check updates), 'added' or 'failed'.
+  // { batch: true } (ADD ALL) leaves opening Check updates to the caller,
+  // so the batch keeps going instead of stopping at the first staged one.
+  async function addDrawing(part, { batch = false } = {}) {
     // The new drawing waits on Check updates; LUNA is asked again once it's sent.
-    if (await updateLunaFiles(part) === 'staged') { showUpdates(); return false; }
+    const result = await updateLunaFiles(part, { quiet: batch });
+    if (result === 'staged') {
+      if (!batch) showUpdates();
+      return 'staged';
+    }
     const number = lunaNumberOf(part);
     if (number) await recheckDrawings([number]);
     drawingPick.delete(part.partId);
     if (state.screen === 'list') renderPartList();
-    return !missingDrawing(part);
+    return missingDrawing(part) ? 'failed' : 'added';
   }
 
   async function addAllDrawings() {
@@ -1284,26 +1291,36 @@
     if (!parts.length) return;
     drawingCheck.adding = true;
     let added = 0;
+    let staged = 0;
     let failedInARow = 0;
     try {
+      // Read the drawing tabs once for the whole batch (1 Onshape call), like
+      // UPDATE ALL, instead of once per part.
+      await loadDrawings();
       for (let i = 0; i < parts.length; i += 1) {
         drawingCheck.summary = `Adding drawing ${i + 1} of ${parts.length}…`;
         renderDrawingBar();
-        if (await addDrawing(parts[i])) { added += 1; failedInARow = 0; }
+        const result = await addDrawing(parts[i], { batch: true });
+        // A drawing waiting on Check updates counts as progress, not a failure.
+        if (result === 'staged') { staged += 1; failedInARow = 0; }
+        else if (result === 'added') { added += 1; failedInARow = 0; }
         else failedInARow += 1;
         // Two in a row failing usually means the Onshape login or the API
         // limit, which would fail the rest too.
         if (failedInARow >= 2 && i < parts.length - 1) {
-          drawingCheck.summary = `Stopped after two failed in a row (see the log). ${added} added.`;
+          drawingCheck.summary = `Stopped after two failed in a row (see the log). ${staged} to check, ${added} added.`;
           return;
         }
       }
-      const left = state.parts.filter(missingDrawing).length;
-      drawingCheck.summary = left ? `${added} added, ${left} still without one (see the log).` : `✓ ${added} drawing${added === 1 ? '' : 's'} added.`;
-      showToast(`✓ ${added} drawing${added === 1 ? '' : 's'} added`, 4000);
+      const failed = parts.length - staged - added;
+      drawingCheck.summary = staged
+        ? `${staged} drawing${staged === 1 ? '' : 's'} to check${failed ? `, ${failed} failed (see the log)` : ''}. Tick them OK on Check updates to send them.`
+        : failed ? `${added} added, ${failed} still without one (see the log).` : `✓ ${added} drawing${added === 1 ? '' : 's'} added.`;
+      showToast(staged ? `✓ ${staged} drawing${staged === 1 ? '' : 's'} to check` : `✓ ${added} drawing${added === 1 ? '' : 's'} added`, 4000);
     } finally {
       drawingCheck.adding = false;
-      if (state.screen === 'list') renderPartList();
+      if (staged) setTimeout(showUpdates, 0);
+      else if (state.screen === 'list') renderPartList();
     }
   }
 
@@ -1537,18 +1554,17 @@
       const info = await getJson(`/api/luna/part-files?number=${encodeURIComponent(lunaNumber)}`);
       if (renumber) {
         // Same LUNA part, new number: its id, notes tag (the link to this
-        // Onshape part) and files all stay, so nothing else breaks.
+        // Onshape part) and files all stay, so nothing else breaks. The new
+        // number is only picked here; LUNA gets it when the part is ticked OK
+        // and sent (see applyLunaRename), so SKIP leaves LUNA as it was.
         number = await nextNumberForLinked(info.projectId);
         if (!TEAM_NUMBER.test(number)) throw new Error(`the next number came out as ${number}. Open NAME, set the prefix (like 26O-E) and name a part, then try again.`);
-        await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ partNumber: number, onshapePartId: part.partId }),
-        });
-        state.uploaded.add(number.toUpperCase());
-        if (part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, number);
-        log(`Renumbered ${lunaNumber} to ${number} in LUNA Parts.`, 'success');
       }
+      // The LUNA number change this update needs, if any: RENUMBER, or a
+      // local part renamed in Onshape after upload (E018 -> 26O-E018).
+      const lunaRename = number.toUpperCase() !== lunaNumber.toUpperCase()
+        ? { lunaPartId: info.lunaPartId, from: lunaNumber, to: number, relink: renumber, done: false }
+        : null;
       // A drawing tab that isn't named after the part's number (an old
       // number like E018, or a linked part's catalog name) is renamed to match.
       // Linked parts' drawings are also checked for a stale number box (a
@@ -1602,25 +1618,18 @@
         if (made && !made.failed && made.drawingId) drawing = { id: made.drawingId, name: made.name };
       }
       if (!drawing && !wantDxf && !info.hadStep) {
-        // RENUMBER still did its main job (the new number in LUNA).
+        // RENUMBER still does its main job (the new number in LUNA). There
+        // are no files to check, so it goes now.
         if (renumber) {
+          await applyLunaRename(part, lunaRename);
           log(`${number} is renumbered, but no drawing tab named ${lunaNumber} or ${number} is in this document, so no new drawing was sent. If its drawing is in another document, rename that tab to start with ${number}, then press UPDATE FILES here.`, 'error');
           if (!quiet) showToast(`\u2713 Renumbered to ${number}`, 4000);
           return 'updated';
         }
         throw new Error(`No drawing named ${number} found in this document, so there's nothing to send.`);
       }
-      if (!renumber && number.toUpperCase() !== lunaNumber.toUpperCase()) {
-        await getJson(`/api/luna/parts/${encodeURIComponent(info.lunaPartId)}/number`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ partNumber: number }),
-        });
-        state.uploaded.add(number.toUpperCase());
-        log(`Renamed ${lunaNumber} to ${number} in LUNA Parts to match Onshape.`, 'success');
-      }
       const item = {
-        part, number, lunaPartId: info.lunaPartId, revision: info.nextRevision,
+        part, number, lunaPartId: info.lunaPartId, revision: info.nextRevision, lunaRename,
         drawing: drawing ? { id: drawing.id, name: drawing.name } : null,
         wantDxf, missingDxf, wantStep: info.hadStep, found, ok: false, error: '', sent: false,
       };
@@ -1646,8 +1655,26 @@
 
   // Sends one part's new files (drawing PDF, DXF, STEP) to LUNA as the next
   // revision. Returns 'updated'.
+  // Gives the LUNA part its new number. Runs once: a retry after the files
+  // failed doesn't send it again.
+  async function applyLunaRename(part, rename) {
+    if (!rename || rename.done) return;
+    await getJson(`/api/luna/parts/${encodeURIComponent(rename.lunaPartId)}/number`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rename.relink ? { partNumber: rename.to, onshapePartId: part.partId } : { partNumber: rename.to }),
+    });
+    rename.done = true;
+    state.uploaded.add(rename.to.toUpperCase());
+    if (rename.relink && part.onshapeKey && state.linkedNumbers) state.linkedNumbers.set(part.onshapeKey, rename.to);
+    log(rename.relink ? `Renumbered ${rename.from} to ${rename.to} in LUNA Parts.`
+      : `Renamed ${rename.from} to ${rename.to} in LUNA Parts to match Onshape.`, 'success');
+  }
+
   async function sendUpdate(item, { quiet = false } = {}) {
     const { part, number } = item;
+    // The number change waits until now, after the part was ticked OK.
+    await applyLunaRename(part, item.lunaRename);
     const body = await getJson(`/api/luna/parts/${encodeURIComponent(item.lunaPartId)}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1735,6 +1762,14 @@
       draw.className = u.drawing ? 'part-sub' : 'part-sub bad';
       draw.textContent = u.drawing ? `Drawing: ${u.drawing.name}. Check its Qty and length match this part.` : 'No drawing tab, so only the other files go.';
       text.append(name, info, draw);
+      if (u.lunaRename && !u.sent) {
+        const change = document.createElement('span');
+        change.className = 'part-sub';
+        change.textContent = u.lunaRename.done
+          ? `LUNA number already changed from ${u.lunaRename.from} to ${u.lunaRename.to}.`
+          : `When sent, LUNA's number changes from ${u.lunaRename.from} to ${u.lunaRename.to}.`;
+        text.appendChild(change);
+      }
       if (u.error) {
         const err = document.createElement('span');
         err.className = 'part-sub bad';
@@ -1759,10 +1794,13 @@
         remove.type = 'button';
         remove.className = 'see';
         remove.textContent = 'SKIP';
-        remove.title = 'Don\u2019t send this one (the Onshape drawing stays). Fix the drawing, then press UPDATE FILES on the part again.';
+        remove.title = 'Don\u2019t send this one (the Onshape drawing stays, and LUNA isn\u2019t changed). Fix the drawing, then press UPDATE FILES on the part again.';
         remove.disabled = sendingUpdates;
         remove.addEventListener('click', () => {
           pendingUpdates = pendingUpdates.filter((x) => x !== u);
+          // A RENUMBER that was skipped hands its number back, so trying
+          // again picks the same one (its drawing tab may already carry it).
+          if (u.lunaRename && u.lunaRename.relink && !u.lunaRename.done) givenNumbers.delete(u.lunaRename.to);
           log(`Skipped ${u.number}: nothing sent to LUNA.`);
           renderUpdates();
         });
