@@ -132,6 +132,8 @@ async function rec(name, cookie, method, path, body, h) {
     ['POST', '/api/luna/parts/666/attachments', { partId: 'JHD', partNumber: 'X' }],
     // The DXF goes up, then LUNA refuses the drawing PDF.
     ['POST', '/api/luna/parts/667/attachments', { partId: 'JHD', partNumber: '26O-E001', drawingId: DRW }],
+    // LUNA refuses the DXF: the drawing PDF still goes up, and the DXF is flagged missing.
+    ['POST', '/api/luna/parts/668/attachments', { partId: 'JHD', partNumber: '26O-E001', drawingId: DRW }],
     ['POST', '/api/luna/parts/11/attachments', { partId: 'JHD', drawingId: 'nothex' }],
     ['POST', '/api/luna/parts/11/attachments', { partId: 'bad id' }],
     ['POST', '/api/luna/parts/x/attachments', { partId: 'JHD' }],
