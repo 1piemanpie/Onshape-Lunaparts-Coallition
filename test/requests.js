@@ -179,6 +179,8 @@ async function rec(name, cookie, method, path, body, h) {
 
   const linked = list.parts.find((p) => p.linked && p.name === "ThunderHex shaft");
   const local = list.parts.find((p) => !p.linked && p.name === 'Part 2');
+  const spacer = list.parts.find((p) => p.linked && p.name === 'Spacer');
+  const newSpacer = list.parts.find((p) => p.linked && p.name === 'Spacer 1/4in');
   const more = [
     ['GET', `/api/onshape/part-shape?partId=${ids[0]}`],
     ['GET', `/api/onshape/part-shape?partId=a000000000000`],
@@ -191,7 +193,14 @@ async function rec(name, cookie, method, path, body, h) {
     ['GET', '/api/onshape/parts'],
     ['POST', '/api/onshape/make-drawing', { partId: linked.partId, partNumber: '26O-E007', partName: 'Shaft' }],
     ['POST', '/api/onshape/make-drawing', { partId: local.partId, partNumber: '26O-E041', partName: 'Side' }],
+    // The linked shaft is already in LUNA as 26O-E007 (old notes tag), so a
+    // second upload under a new number is refused and points at E007.
     ['POST', '/api/luna/parts', { projectId: 5, name: 'Linked shaft', partNumber: '26O-E060', statusId: 1, type: 'part', quantity: 1, onshapePartId: linked.partId }],
+    // Same for the spacer (external_ref, E008), even from another computer.
+    ['POST', '/api/luna/parts', { projectId: 5, name: 'Spacer', partNumber: '26O-E061', statusId: 1, type: 'part', quantity: 2, onshapePartId: spacer.partId }],
+    // A new spacer is created, with its link.
+    ['POST', '/api/luna/parts', { projectId: 5, name: 'Spacer 1/4in', partNumber: '26O-E062', statusId: 1, type: 'part', quantity: 1, onshapePartId: newSpacer.partId }],
+    ['GET', '/api/luna/part-numbers'],
     ['POST', '/api/luna/parts/11/attachments', { partId: linked.partId, partNumber: '26O-E007', wantStep: true }],
     ['POST', '/api/luna/dxf-check', { parts: [{ partId: local.partId, number: '26O-E001' }] }],
     // LINK TO IT: a linked part tied to the LUNA part already numbered E011.

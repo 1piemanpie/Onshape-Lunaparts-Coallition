@@ -1012,6 +1012,25 @@
       uploadedFold.appendChild(bar);
       if (dxfCheck.running || dxfCheck.summary || updateAll.running || updateAll.summary) uploadedFold.open = true;
     }
+    // Linked parts LUNA has under two numbers (from before the panel
+    // checked), so they can be cleaned up by hand. This project only.
+    const project = projectSelect && projectSelect.value;
+    const dups = (state.lunaDuplicates || []).filter((d) => !project || String(d.projectId) === String(project));
+    if (dups.length) {
+      const box = document.createElement('div');
+      box.className = 'dxf-check';
+      const head = document.createElement('span');
+      head.className = 'twin ask';
+      head.textContent = `\u26a0 ${dups.length === 1 ? 'This part is' : `These ${dups.length} parts are`} in LUNA Parts more than once. Keep one number, and delete the extra in LUNA:`;
+      box.appendChild(head);
+      for (const d of dups.slice(0, 30)) {
+        const line = document.createElement('span');
+        line.className = 'twin';
+        line.textContent = `${d.name}: ${d.numbers.join(', ')}`;
+        box.appendChild(line);
+      }
+      list.appendChild(box);
+    }
     foldFor('block', 'BLOCK CAD (DERIVED)', state.parts.filter((p) => section(p) === 'block'));
     foldFor('hardware', 'HARDWARE & COTS', state.parts.filter((p) => section(p) === 'hardware'));
     for (const part of state.parts) {
@@ -2640,6 +2659,7 @@
       state.uploaded = new Set(body.partNumbers.map((n) => n.toUpperCase()));
       state.linkedNumbers = new Map(Object.entries(body.linked || {}));
       state.lunaByName = new Map(Object.entries(body.byName || {}));
+      state.lunaDuplicates = body.duplicates || [];
       if (state.screen === 'list') renderPartList();
       maybeCheckDrawings();
     } catch (err) {
@@ -2814,6 +2834,19 @@
   async function fillLinkedNumber(part) {
     el('partNumberInput').placeholder = 'Finding next number…';
     try {
+      // Someone on another computer may have uploaded it since this panel
+      // opened. Re-reading LUNA's list costs no Onshape calls.
+      await loadUploaded();
+      if (currentPart() !== part || el('partNumberInput').value) return;
+      const already = lunaNumberFor(part);
+      if (already) {
+        log(`${part.name} is already in LUNA Parts as ${already}, so it doesn\u2019t need a new number. Skipped.`, 'success');
+        showToast(`\u2713 Already in LUNA as ${already}`, 3000);
+        state.checked.delete(part.partId);
+        state.results.push({ name: already, outcome: 'skipped', detail: `Already in LUNA Parts as ${already}`, kind: '' });
+        nextCard();
+        return;
+      }
       const number = await nextNumberForLinked(cardProjectSelect.value);
       if (currentPart() !== part || el('partNumberInput').value) return;
       el('partNumberInput').value = number;
@@ -3457,6 +3490,7 @@
         faceId: s.faceId,
         dxfSides: s.dxfSides || [],
         drawingId: s.drawing.state === 'ready' ? s.drawing.id : '',
+        drawingName: s.drawing.state === 'ready' ? s.drawing.name || '' : '',
         wantDxf: s.wantDxf,
         wantStep: s.wantStep,
         result,
@@ -3531,6 +3565,25 @@
         result.kind = files.ok ? 'good' : 'bad';
       }
     } catch (err) {
+      // A linked part someone else already uploaded: nothing was created,
+      // and it's in LUNA under its first number. Not a failure.
+      const already = err.status === 409 && err.body && err.body.alreadyIn;
+      if (already && already.partNumber) {
+        if (!state.uploaded) state.uploaded = new Set();
+        state.uploaded.add(already.partNumber.toUpperCase());
+        if (!state.linkedNumbers) state.linkedNumbers = new Map();
+        if (onshapePart && onshapePart.onshapeKey) state.linkedNumbers.set(onshapePart.onshapeKey, already.partNumber);
+        if (already.key) state.linkedNumbers.set(already.key, already.partNumber);
+        givenNumbers.delete(result.name);
+        const tab = job.drawingName ? ` Its new drawing tab "${job.drawingName}" isn\u2019t needed, so you can delete it.` : '';
+        result.outcome = 'skipped';
+        result.kind = '';
+        result.detail = `Already in LUNA Parts as ${already.partNumber}, so it wasn\u2019t uploaded again.${tab}`;
+        unstage(onshapePart.partId);
+        log(`${result.name}: already in LUNA Parts as ${already.partNumber}. Not uploaded again.${tab}`, 'success');
+        renderUploadProgress();
+        return;
+      }
       // Nothing was created, so the part stays saved to try again.
       result.outcome = 'failed';
       result.kind = 'bad';
