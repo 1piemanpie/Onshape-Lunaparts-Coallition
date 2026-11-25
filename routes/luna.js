@@ -9,10 +9,11 @@ const {
 const { safeFileName, buildDxf, exportStep, exportDrawingPdf } = require('../lib/onshape/exports');
 const {
   lunaRequest, lunaGetAll, attachmentExtension, getOptions, getStatuses, getParts, getProjectParts,
-  drawingStatus, forgetDrawingInfo,
+  drawingStatus, forgetDrawingInfo, rememberPart,
 } = require('../lib/luna');
 const { REAM_UNDERSIZE_IN } = require('../lib/dxf');
 const { requireLogin, requirePanel, requireLunaKey, validate } = require('../lib/middleware');
+const { withKeys } = require('../lib/key-lock');
 const schemas = require('../lib/schemas');
 
 const router = express.Router();
@@ -120,6 +121,9 @@ router.get('/api/luna/part-numbers', requireLogin, async (req, res) => {
     res.status(502).json({ error: 'Could not read part numbers from LUNA Parts.' });
   }
 });
+
+// The lock key for "this part number in this project" (see lib/key-lock.js).
+const numberLockKey = (projectId, number) => `num:${projectId}:${String(number).trim().toLowerCase()}`;
 
 // Team rule: a part whose machine is CNC (or mill/router, but not a lathe) needs a DXF.
 const isCncTool = (name) => /cnc|mill|router/i.test(name || '') && !/lathe/i.test(name || '');
@@ -252,37 +256,40 @@ router.post('/api/luna/parts/:id/number', requireLogin,
     if (!got.ok) return res.status(502).json({ error: `LUNA Parts couldn't find that part (${got.status}).` });
     const gotBody = await got.json();
     const part = gotBody.data || gotBody;
-    const siblings = await getProjectParts(part.project_id);
-    const clash = siblings.find((p) => p.id !== part.id && p.project_id === part.project_id
-      && String(p.part_number || '').trim().toUpperCase() === number.toUpperCase());
-    if (clash) return res.status(409).json({ error: `${clash.part_number} already exists in this project ("${clash.name}"), so ${part.part_number} wasn't renamed.` });
-    const fields = { part_number: number };
-    for (const key of ['name', 'description', 'external_ref', 'parent_part_id', 'part_status_id', 'tool_id', 'type', 'material',
-      'material_thickness_id', 'priority', 'notes', 'quantity', 'cut_length', 'lead_time_days']) {
-      if (part[key] !== null && part[key] !== undefined) fields[key] = part[key];
-    }
-    // A linked part that was uploaded without its link gets it now, so the
-    // panel finds it by its key from then on (not just by name).
-    let linkedTo = '';
-    if ((!fields.external_ref || relink) && onshapePartId && /^a[0-9a-f]{12}$/.test(onshapePartId) && req.session.onshapeContext) {
-      try {
-        const list = await getAssemblyParts(req, { reuse: true });
-        const linkedPart = list.byId.get(onshapePartId);
-        const ctx = req.session.onshapeContext;
-        const key = linkedPart && !isLocalSource(ctx, linkedPart.source) && linkedPartKey(ctx, linkedPart.source, linkedPart.partId);
-        if (key && `onshape:${key}`.length <= 400) { fields.external_ref = `onshape:${key}`; linkedTo = key; }
-      } catch (err) {
-        console.error('Linked part lookup for renumber failed:', err.message);
+    // Same lock as creating a part, so a new number can't be taken twice.
+    return await withKeys([numberLockKey(part.project_id, number)], async () => {
+      const siblings = await getProjectParts(part.project_id);
+      const clash = siblings.find((p) => p.id !== part.id && p.project_id === part.project_id
+        && String(p.part_number || '').trim().toUpperCase() === number.toUpperCase());
+      if (clash) return res.status(409).json({ error: `${clash.part_number} already exists in this project ("${clash.name}"), so ${part.part_number} wasn't renamed.` });
+      const fields = { part_number: number };
+      for (const key of ['name', 'description', 'external_ref', 'parent_part_id', 'part_status_id', 'tool_id', 'type', 'material',
+        'material_thickness_id', 'priority', 'notes', 'quantity', 'cut_length', 'lead_time_days']) {
+        if (part[key] !== null && part[key] !== undefined) fields[key] = part[key];
       }
-      if (relink && !linkedTo) return res.status(409).json({ error: 'Couldn\'t find that linked part in this assembly, so nothing was linked. Reload the panel and try again.' });
-    }
-    if (!fields.part_status_id && part.status && part.status.id) fields.part_status_id = part.status.id;
-    const put = await lunaRequest(`parts/${id}`, { method: 'PUT', json: fields });
-    if (!put.ok) {
-      console.error('LUNA Parts rename failed:', put.status, await put.text());
-      return res.status(502).json({ error: `LUNA Parts didn't accept the new number (${put.status}).` });
-    }
-    res.json({ ok: true, partNumber: number, ...(linkedTo ? { linkedKey: linkedTo } : {}) });
+      // A linked part that was uploaded without its link gets it now, so the
+      // panel finds it by its key from then on (not just by name).
+      let linkedTo = '';
+      if ((!fields.external_ref || relink) && onshapePartId && /^a[0-9a-f]{12}$/.test(onshapePartId) && req.session.onshapeContext) {
+        try {
+          const list = await getAssemblyParts(req, { reuse: true });
+          const linkedPart = list.byId.get(onshapePartId);
+          const ctx = req.session.onshapeContext;
+          const key = linkedPart && !isLocalSource(ctx, linkedPart.source) && linkedPartKey(ctx, linkedPart.source, linkedPart.partId);
+          if (key && `onshape:${key}`.length <= 400) { fields.external_ref = `onshape:${key}`; linkedTo = key; }
+        } catch (err) {
+          console.error('Linked part lookup for renumber failed:', err.message);
+        }
+        if (relink && !linkedTo) return res.status(409).json({ error: 'Couldn\'t find that linked part in this assembly, so nothing was linked. Reload the panel and try again.' });
+      }
+      if (!fields.part_status_id && part.status && part.status.id) fields.part_status_id = part.status.id;
+      const put = await lunaRequest(`parts/${id}`, { method: 'PUT', json: fields });
+      if (!put.ok) {
+        console.error('LUNA Parts rename failed:', put.status, await put.text());
+        return res.status(502).json({ error: `LUNA Parts didn't accept the new number (${put.status}).` });
+      }
+      res.json({ ok: true, partNumber: number, ...(linkedTo ? { linkedKey: linkedTo } : {}) });
+    });
   } catch (err) {
     console.error('LUNA Parts rename failed:', err);
     res.status(502).json({ error: 'Could not reach LUNA Parts to rename the part.' });
@@ -370,52 +377,63 @@ router.post('/api/luna/parts', requireLogin, validate('body', schemas.createPart
 
   if (notes.length) fields.notes = notes.join('\n');
 
+  // Check and create run one at a time per part number (in this project)
+  // and per linked part, so two people uploading the same part at once
+  // can't both get past the checks below.
+  const lockKeys = [
+    fields.part_number && numberLockKey(fields.project_id, fields.part_number),
+    linkKey && `link:${linkKey}`,
+  ];
   try {
-    // Someone else (another computer, or this panel before a reload) may
-    // have uploaded this linked part already. Don't make a second LUNA part
-    // with a new number: tell the panel which one it is.
-    if (linkKey) {
-      const already = lunaPartForKey(await getParts(), linkKey);
-      if (already) {
-        return res.status(409).json({
-          error: `This linked part is already in LUNA Parts as ${already.part_number || `part ${already.id}`}, so it wasn't uploaded again.`,
-          alreadyIn: { id: already.id, partNumber: String(already.part_number || ''), projectId: already.project_id, key: linkKey },
-        });
+    await withKeys(lockKeys, async () => {
+      // Someone else (another computer, or this panel before a reload) may
+      // have uploaded this linked part already. Don't make a second LUNA part
+      // with a new number: tell the panel which one it is.
+      if (linkKey) {
+        const already = lunaPartForKey(await getParts(), linkKey);
+        if (already) {
+          return res.status(409).json({
+            error: `This linked part is already in LUNA Parts as ${already.part_number || `part ${already.id}`}, so it wasn't uploaded again.`,
+            alreadyIn: { id: already.id, partNumber: String(already.part_number || ''), projectId: already.project_id, key: linkKey },
+          });
+        }
       }
-    }
-    if (fields.part_number) {
-      const existing = await getProjectParts(fields.project_id);
-      const duplicate = existing.find((p) => p.project_id === fields.project_id
-        && String(p.part_number).toLowerCase() === fields.part_number.toLowerCase());
-      if (duplicate) {
-        return res.status(409).json({
-          error: `${duplicate.part_number} already exists in this project ("${duplicate.name}"), so nothing was created.`,
-        });
+      if (fields.part_number) {
+        const existing = await getProjectParts(fields.project_id);
+        const duplicate = existing.find((p) => p.project_id === fields.project_id
+          && String(p.part_number).toLowerCase() === fields.part_number.toLowerCase());
+        if (duplicate) {
+          return res.status(409).json({
+            error: `${duplicate.part_number} already exists in this project ("${duplicate.name}"), so nothing was created.`,
+          });
+        }
       }
-    }
 
-    const form = new FormData();
-    for (const [key, value] of Object.entries(fields)) {
-      if (value !== null && value !== '') form.append(key, String(value));
-    }
+      const form = new FormData();
+      for (const [key, value] of Object.entries(fields)) {
+        if (value !== null && value !== '') form.append(key, String(value));
+      }
 
-    const lunaRes = await lunaRequest('parts', { method: 'POST', body: form });
-    const body = await lunaRes.json().catch(() => ({}));
+      const lunaRes = await lunaRequest('parts', { method: 'POST', body: form });
+      const body = await lunaRes.json().catch(() => ({}));
 
-    if (lunaRes.status === 422) {
-      const details = Object.values(body.errors || {}).flat().join(' ');
-      return res.status(422).json({ error: details || body.message || 'LUNA Parts rejected the part.' });
-    }
-    if (!lunaRes.ok) {
-      console.error('LUNA Parts create failed:', lunaRes.status, body);
-      const message = lunaRes.status === 403
-        ? 'The API key\'s LUNA Parts user isn\'t allowed to create parts (it needs editor access).'
-        : `LUNA Parts returned an error (${lunaRes.status}).`;
-      return res.status(502).json({ error: message });
-    }
+      if (lunaRes.status === 422) {
+        const details = Object.values(body.errors || {}).flat().join(' ');
+        return res.status(422).json({ error: details || body.message || 'LUNA Parts rejected the part.' });
+      }
+      if (!lunaRes.ok) {
+        console.error('LUNA Parts create failed:', lunaRes.status, body);
+        const message = lunaRes.status === 403
+          ? 'The API key\'s LUNA Parts user isn\'t allowed to create parts (it needs editor access).'
+          : `LUNA Parts returned an error (${lunaRes.status}).`;
+        return res.status(502).json({ error: message });
+      }
 
-    const created = body.data || body;
-    res.status(201).json({ id: created.id, partNumber: created.part_number, name: created.name });
+      const created = body.data || body;
+      // The next check (maybe already waiting) must see this part.
+      rememberPart({ ...fields, ...created, project_id: created.project_id || fields.project_id, part_number: created.part_number || fields.part_number });
+      res.status(201).json({ id: created.id, partNumber: created.part_number, name: created.name });
+    });
   } catch (err) {
     console.error('LUNA Parts create failed:', err);
     res.status(502).json({ error: 'Could not reach LUNA Parts.' });

@@ -125,6 +125,9 @@ POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file R.dxf 433>
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 5.dxf 433>&revision=2&description=Updated from Onshape
 GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
+POST build.lunatecs.org/api/v1/parts project_id=5&name=Race plate&part_number=26O-E060&part_status_id=1&type=part&quantity=1&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
+GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 POST oauth.onshape.com/oauth/token grant_type=authorization_code&code=abc&client_id=test-client&client_secret=test-secret&redirect_uri=https%3A%2F%2F127.0.0.1%3A3999%2Foauth%2Fcallback
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/currentmicroversion 
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/elements 
