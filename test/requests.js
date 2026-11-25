@@ -170,6 +170,12 @@ async function rec(name, cookie, method, path, body, h) {
   ];
   for (const [m, p, b] of steps) await rec(`ps ${m} ${p} ${b ? JSON.stringify(b).slice(0, 120) : ''}`, c, m, p, b);
 
+  // Two students press upload on the same new number at the same moment:
+  // exactly one part is made, the other gets "already exists".
+  const same = { projectId: 5, name: 'Race plate', partNumber: '26O-E060', statusId: 1, type: 'part', quantity: 1 };
+  const raced = await Promise.all([call(c, 'POST', '/api/luna/parts', same), call(c, 'POST', '/api/luna/parts', same)]);
+  out.push(JSON.stringify({ name: 'ps two creates of 26O-E060 at once', statuses: raced.map((r) => r.status).sort() }));
+
   const asm = await login(A);
   const a = asm.cookie;
   const asmSteps = [
