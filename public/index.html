@@ -2569,13 +2569,15 @@
     found = found.filter((c) => !(state.parts || []).some((p) => p !== part && (p.linked
       ? p.onshapeKey && state.linkedNumbers && state.linkedNumbers.get(p.onshapeKey) === c.number
       : String(p.name || '').trim().toUpperCase() === c.number.toUpperCase())));
-    // The same catalog part may be in other robots' projects too: prefer
-    // this panel's project, then parts uploaded as linked parts.
+    // The same catalog part is often in other subsystems' projects too (a
+    // 2" spacer in the elevator and in the arm), and each project gives it
+    // its own number. So a name only counts inside this panel's project,
+    // never another one's. Parts uploaded as linked parts come first.
     const project = projectSelect && projectSelect.value;
-    for (const narrow of [(c) => project && String(c.projectId) === String(project), (c) => c.tagged]) {
-      const fewer = found.filter(narrow);
-      if (fewer.length) found = fewer;
-    }
+    if (!project) return '';
+    found = found.filter((c) => String(c.projectId) === String(project));
+    const tagged = found.filter((c) => c.tagged);
+    if (tagged.length) found = tagged;
     const numbers = [...new Set(found.map((c) => c.number))];
     return numbers.length === 1 ? numbers[0] : '';
   }
