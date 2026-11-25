@@ -472,6 +472,9 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
   // Set when a DXF was wanted (a CNC part) but couldn't be made, so the panel
   // can flag the part instead of calling the upload a success.
   let dxfMissing = false;
+  // Each kind of file that was asked for but didn't end up in LUNA
+  // ('DXF', 'drawing PDF', 'STEP'), so the panel never calls it a success.
+  const missing = [];
 
   let resolved;
   try {
@@ -493,9 +496,9 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
   if (!wantDxf) {
     // Not a CNC part: no DXF wanted, so nothing to report.
   } else if (dxf.status === 'fulfilled' && Array.isArray(dxf.value)) {
-    for (const d of dxf.value) files.push({ name: `${fileBase} ${d.side} side.dxf`, type: 'application/dxf', data: d.dxf });
+    for (const d of dxf.value) files.push({ name: `${fileBase} ${d.side} side.dxf`, type: 'application/dxf', data: d.dxf, kind: 'DXF' });
   } else if (dxf.status === 'fulfilled') {
-    files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf });
+    files.push({ name: `${fileBase}.dxf`, type: 'application/dxf', data: dxf.value.dxf, kind: 'DXF' });
     const reamed = dxf.value.reamed || [];
     if (reamed.length) {
       const sizes = [...new Set(reamed)].map((d) => `${d.toFixed(3)}"`).join(' and ');
@@ -505,27 +508,30 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
   } else {
     console.error('DXF build failed:', dxf.reason);
     dxfMissing = true;
+    missing.push('DXF');
     notes.push(dxf.reason.status ? 'Couldn\'t read the part from Onshape for the DXF.' : dxf.reason.message);
   }
   if (!drawingId) {
     notes.push('No drawing was chosen, so no PDF was attached.');
   } else if (pdf.status === 'fulfilled') {
-    files.push({ name: `${fileBase} drawing.pdf`, type: 'application/pdf', data: pdf.value, drawing: true });
+    files.push({ name: `${fileBase} drawing.pdf`, type: 'application/pdf', data: pdf.value, drawing: true, kind: 'drawing PDF' });
   } else {
     console.error('Drawing PDF export failed:', pdf.reason);
+    missing.push('drawing PDF');
     notes.push(pdf.reason.status ? `Couldn't export the drawing PDF (Onshape ${pdf.reason.status}).` : pdf.reason.message);
   }
 
   if (wantStep) {
     if (step.status === 'fulfilled') {
-      files.push({ name: `${fileBase}.step`, type: 'application/step', data: step.value });
+      files.push({ name: `${fileBase}.step`, type: 'application/step', data: step.value, kind: 'STEP' });
     } else {
       console.error('STEP export failed:', step.reason);
+      missing.push('STEP');
       notes.push(step.reason.status ? `Couldn't export the STEP file (Onshape ${step.reason.status}).` : step.reason.message);
     }
   }
 
-  if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes, dxfMissing });
+  if (!files.length) return res.status(502).json({ error: 'Nothing was attached.', notes, dxfMissing, missing });
 
   // The drawing PDF goes up on its own with is_drawing, so LUNA lists it as
   // the part's drawing (and puts it in the project's design pack). LUNA
@@ -535,6 +541,16 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
     { files: files.filter((f) => f.drawing), isDrawing: true },
   ].filter((g) => g.files.length);
   const attached = [];
+  // A group LUNA refuses doesn't stop the other one (the PDF still goes up
+  // if the DXF is refused, and the other way round).
+  const refused = [];
+  // A refused group: its kinds count as missing (a refused DXF on a CNC
+  // part is flagged like one that couldn't be made).
+  const refuse = (group, problem) => {
+    refused.push(`${group.files.map((f) => f.name).join(' + ')} didn't go up: ${problem}`);
+    for (const f of group.files) if (!missing.includes(f.kind)) missing.push(f.kind);
+    if (group.files.some((f) => f.kind === 'DXF')) dxfMissing = true;
+  };
 
   for (const group of groups) {
     try {
@@ -552,22 +568,20 @@ router.post('/api/luna/parts/:id/attachments', requirePanel,
         const body = await lunaRes.json().catch(() => ({}));
         console.error('LUNA Parts attachment upload failed:', lunaRes.status, body);
         const details = lunaRes.status === 422 ? Object.values(body.errors || {}).flat().join(' ') : '';
-        const problem = details || `LUNA Parts didn't accept the files (${lunaRes.status}).`;
-        return res.status(502).json({
-          error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem,
-          attached,
-          notes,
-          dxfMissing,
-        });
+        refuse(group, details || `LUNA Parts didn't accept the files (${lunaRes.status}).`);
+        continue;
       }
       attached.push(...group.files.map((f) => f.name));
     } catch (err) {
       console.error('LUNA Parts attachment upload failed:', err);
-      const problem = 'Could not reach LUNA Parts to upload the files.';
-      return res.status(502).json({ error: attached.length ? `${attached.join(' + ')} went up, but ${group.files.map((f) => f.name).join(' + ')} didn't: ${problem}` : problem, attached, notes, dxfMissing });
+      refuse(group, 'Could not reach LUNA Parts to upload the files.');
     }
   }
-  res.json({ attached, notes, dxfMissing });
+  if (refused.length) {
+    const error = attached.length ? `${attached.join(' + ')} went up, but ${refused.join('; ')}` : refused.join('; ');
+    return res.status(502).json({ error, attached, notes, dxfMissing, missing });
+  }
+  res.json({ attached, notes, dxfMissing, missing });
 });
 
 module.exports = router;

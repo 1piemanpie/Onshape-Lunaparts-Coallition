@@ -1699,6 +1699,14 @@
     });
     for (const note of body.notes || []) log(note, 'error');
     log(`Updated ${number} in LUNA Parts: ${body.attached.join(', ')} as revision ${item.revision}.`, 'success');
+    // The drawing PDF (or STEP) was asked for but didn't go up: say so on
+    // the Check updates row, so it doesn't look done.
+    const lost = (body.missing || []).filter((kind) => kind !== 'DXF');
+    if (lost.length) {
+      item.error = `Sent, but NOT the ${lost.join(' or ')}: ${(body.notes || []).join(' ')} Fix it in Onshape, then press UPDATE FILES again.`;
+      log(`${number}: the ${lost.join(' and ')} didn't go to LUNA.`, 'error');
+      if (!quiet) showToast(`\u26a0 ${number} updated, but without its ${lost.join(' or ')}`, 6000);
+    }
     if (item.wantDxf && body.dxfMissing) {
       flagMissingDxf(part, number);
       if (!quiet) showToast(`\u26a0 ${number} updated, but its DXF couldn\u2019t be made`, 6000);
@@ -1842,8 +1850,9 @@
       showToast(`\u2713 Sent ${sent.length} to LUNA`, 4000);
       recheckDrawings(sent).catch(() => {});
     }
-    // All done: back to the list, with the sent ones cleared.
-    if (pendingUpdates.every((u) => u.sent)) {
+    // All done: back to the list, with the sent ones cleared. One that went
+    // without its drawing PDF stays on screen so the warning is seen.
+    if (pendingUpdates.every((u) => u.sent && !u.error)) {
       pendingUpdates = [];
       showScreen('list');
       renderPartList();
@@ -3673,6 +3682,12 @@
       if (body.dxfMissing) {
         flagMissingDxf(job.onshapePart, created.partNumber);
         return { ok: false, text: `${body.attached.join(' + ')} went up, but NO DXF: ${(body.notes || []).join(' ')} A CNC part needs one: fix it in Onshape, then tap ADD DXF under ALREADY IN LUNA PARTS.` };
+      }
+      // Something else that was asked for (the drawing PDF, the STEP)
+      // didn't go up: not a success, and say how to send it again.
+      const lost = (body.missing || []).filter((kind) => kind !== 'DXF');
+      if (lost.length) {
+        return { ok: false, text: `${body.attached.join(' + ')} went up, but NOT the ${lost.join(' or ')}: ${(body.notes || []).join(' ')} Fix it in Onshape, then tap UPDATE FILES on this part under ALREADY IN LUNA PARTS.` };
       }
       const notes = (body.notes || []).length ? ` (${body.notes.join(' ')})` : '';
       return { ok: true, text: `${body.attached.join(' + ')}${notes}` };

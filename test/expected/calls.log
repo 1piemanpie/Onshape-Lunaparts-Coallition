@@ -104,8 +104,12 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/XE6 
 POST build.lunatecs.org/api/v1/parts/667/attachments files[]=<file 26O-E001.dxf 433>
 POST build.lunatecs.org/api/v1/parts/667/attachments files[]=<file 26O-E001 drawing.pdf 25>&is_drawing=1
-POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/cccccccccccccccccccccccc/translations {"formatName":"PDF","storeInDocument":false,"currentSheetOnly":false,"destinationName":"26O-E098 drawing"}
+POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/cccccccccccccccccccccccc/translations {"formatName":"PDF","storeInDocument":false,"currentSheetOnly":false,"destinationName":"26O-E001 drawing"}
 GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/XE7 
+POST build.lunatecs.org/api/v1/parts/668/attachments files[]=<file 26O-E001.dxf 433>
+POST build.lunatecs.org/api/v1/parts/668/attachments files[]=<file 26O-E001 drawing.pdf 25>&is_drawing=1
+POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/cccccccccccccccccccccccc/translations {"formatName":"PDF","storeInDocument":false,"currentSheetOnly":false,"destinationName":"26O-E098 drawing"}
+GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/XE8 
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 26O-E098 drawing.pdf 25>&is_drawing=1
 GET cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/p/JHH 
 POST cad.onshape.com/api/metadata/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/eeeeeeeeeeeeeeeeeeeeeeee/p/JHH {"jsonType":"metadata-part","partId":"JHH","properties":[{"propertyId":"pNum","value":"26O-E070"}]}
@@ -113,7 +117,7 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add views","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateViews","views":[{"position":{"x":3.2685,"y":4.1843},"logicalId":"auto_main","viewType":"TopLevel","orientation":"top","rotation":0,"scale":{"scaleSource":"Custom","numerator":1,"denumerator":1},"reference":{"elementId":"eeeeeeeeeeeeeeeeeeeeeeee","idTag":"JHH"},"showCentermarks":false},{"position":{
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/translations {"formatName":"DRAWING_JSON","storeInDocument":false,"level":"full"}
-GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X8 
+GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X9 
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
@@ -124,7 +128,7 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add views","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateViews","views":[{"position":{"x":3.2685,"y":4.1843},"logicalId":"auto_main","viewType":"TopLevel","orientation":"top","rotation":0,"scale":{"scaleSource":"Custom","numerator":1,"denumerator":1},"reference":{"elementId":"eeeeeeeeeeeeeeeeeeeeeeee","idTag":"JHH"},"showCentermarks":false},{"position":{
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/translations {"formatName":"DRAWING_JSON","storeInDocument":false,"level":"full"}
-GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X9 
+GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X10 
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 2 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
@@ -152,7 +156,7 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add views","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateViews","views":[{"position":{"x":null,"y":null},"logicalId":"auto_main","viewType":"TopLevel","orientation":"top","rotation":0,"scale":{"scaleSource":"Custom","numerator":1,"denumerator":10},"reference":{"documentId":"111111111111111111111111","versionId":"222222222222222222222222","elementId":"333
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/translations {"formatName":"DRAWING_JSON","storeInDocument":false,"level":"full"}
-GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X10 
+GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X11 
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
@@ -163,7 +167,7 @@ POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaa
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add views","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateViews","views":[{"position":{"x":3.2685,"y":4.1843},"logicalId":"auto_main","viewType":"TopLevel","orientation":"top","rotation":0,"scale":{"scaleSource":"Custom","numerator":1,"denumerator":1},"reference":{"elementId":"eeeeeeeeeeeeeeeeeeeeeeee","idTag":"JHH"},"showCentermarks":false},{"position":{
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/translations {"formatName":"DRAWING_JSON","storeInDocument":false,"level":"full"}
-GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X11 
+GET cad.onshape.com/api/documents/d/dddddddddddddddddddddddd/externaldata/X12 
 GET cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 GET cad.onshape.com/api/appelements/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/views/V1/jsongeometry 
 POST cad.onshape.com/api/drawings/d/dddddddddddddddddddddddd/w/aaaaaaaaaaaaaaaaaaaaaaaa/e/ccccccccccccccccccccccc9/modify {"description":"Add dims and notes","jsonRequests":[{"formatVersion":"2021-01-01","messageName":"onshapeCreateAnnotations","annotations":[{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.75,0]},"contents":"Qty: 1 PCS","textHeight":0.12}},{"type":"Onshape::Note","note":{"position":{"type":"Onshape::Reference::Point","coordinate":[0.75,7.5,0]},"cont
@@ -176,7 +180,7 @@ GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_p
 POST build.lunatecs.org/api/v1/parts project_id=5&name=Spacer 1/4in&part_number=26O-E062&part_status_id=1&type=part&quantity=1&external_ref=onshape:dddddddddddddddddddddddd|111111111111111111111111|333333333333333333333333|JND|&notes=Uploaded by Test Student (Onshape, via Luna Parts Bridge)
 GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 POST cad.onshape.com/api/partstudios/d/111111111111111111111111/v/222222222222222222222222/e/333333333333333333333333/translations {"formatName":"STEP","storeInDocument":false,"partIds":"JFD","destinationName":"26O-E007","linkDocumentId":"dddddddddddddddddddddddd"}
-GET cad.onshape.com/api/documents/d/111111111111111111111111/externaldata/X12?linkDocumentId=dddddddddddddddddddddddd 
+GET cad.onshape.com/api/documents/d/111111111111111111111111/externaldata/X13?linkDocumentId=dddddddddddddddddddddddd 
 POST build.lunatecs.org/api/v1/parts/11/attachments files[]=<file 26O-E007.dxf 433>&files[]=<file 26O-E007.step 135>
 GET build.lunatecs.org/api/v1/parts?updated_since=2026-11-11T01%3A58%3A00Z&per_page=100&page=1 
 GET build.lunatecs.org/api/v1/tools?per_page=100&page=1 
